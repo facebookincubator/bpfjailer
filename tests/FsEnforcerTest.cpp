@@ -248,6 +248,19 @@ TEST(FsEnforcer, SpecificPathOverridesRootPolicy) {
   ASSERT_EQ(actor.run(), EACCES);
 }
 
+TEST(FsEnforcer, UnboundVariableDoesNotMatchAtRootTransition) {
+  Fixture fixture;
+  const Policy policy = policyOf(
+      "vars = [\"USER\"]\n[roles.svc]\n" + rule(fixture.dir(), "read-only") +
+      rule(fixture.dir() + "/$USER", std::nullopt));
+  loadJailer(policy);
+  ASSERT_OK(FsEnforcer::load(testPins(), policy));
+
+  Child actor([&] { return openErrno(fixture.file(), O_RDONLY); });
+  enroll("svc", actor.pid());
+  ASSERT_EQ(actor.run(), 0);
+}
+
 TEST(FsEnforcer, HardLinkAliasesDoNotShareCachedPolicy) {
   Fixture fixture;
   const std::string alias = fixture.dir() + "/renamed";

@@ -190,7 +190,9 @@ BPF_SRCS := \
 	bpfj/enforce/bpf/mount_enforce.bpf.c \
 	bpfj/enforce/bpf/enroll.bpf.c
 
-TEST_BPF_SRCS := tests/bpf/glob_map_test.bpf.c
+TEST_BPF_SRCS := \
+	tests/bpf/glob_map_test.bpf.c \
+	tests/bpf/mount_snapshot_test.bpf.c
 
 BPF_OBJS := $(BPF_SRCS:%.bpf.c=$(BUILD)/%.bpf.o)
 BPF_DEPS := $(BPF_OBJS:.bpf.o=.bpf.d)
@@ -278,6 +280,7 @@ TEST_SRCS := \
 	tests/KillEnforcerTest.cpp \
 	tests/LkmEnforcerTest.cpp \
 	tests/MqEnforcerTest.cpp \
+	tests/MountSnapshotTest.cpp \
 	tests/ShmEnforcerTest.cpp \
 	tests/UnixEnforcerTest.cpp \
 	tests/MountEnforcerTest.cpp \
@@ -586,6 +589,7 @@ $(BUILD)/%.o: %.cpp $(SKELS)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
 
 $(BUILD)/tests/GlobMapTest.o: $(TEST_SKELS)
+$(BUILD)/tests/MountSnapshotTest.o: $(TEST_SKELS)
 
 # Rewritten only when the mode actually changes, so an unchanged mode leaves
 # the mtime alone and does not drag the binary through a needless relink.

@@ -83,6 +83,18 @@ class GlobFixture {
     *bindings_ = {};
   }
 
+  std::size_t used() const {
+    return bpfjailer::heap::currentUsed(skel_);
+  }
+
+  bool published() const {
+    return skel_->bss().bpfj_glob_test_map != nullptr;
+  }
+
+  void destroy() {
+    map_->destroy();
+  }
+
   std::vector<std::uint64_t> lookup(std::string_view input) {
     ASSERT(input.size() <= BPFJ_GLOB_MAP_MAX_STR_LEN + 1);
     std::memcpy(input_, input.data(), input.size());
@@ -266,6 +278,31 @@ TEST(GlobMap, EmptyMapMatchesNothing) {
 
   assertValues(fixture.lookup(""), {});
   assertValues(fixture.lookup("anything"), {});
+}
+
+TEST(GlobMap, ReinitializingReleasesThePreviousCompilation) {
+  GlobFixture fixture;
+  const auto baseline = fixture.used();
+  ASSERT_OK(fixture.init({{"abc", 1}}));
+  ASSERT(fixture.used() > baseline);
+
+  ASSERT_OK(fixture.init({{"def", 2}, {"ghi", 3}}));
+  fixture.destroy();
+  ASSERT_EQ(fixture.used(), baseline);
+}
+
+TEST(GlobMap, FailedInitializationUnwindsPublishedState) {
+  GlobFixture fixture;
+  const auto baseline = fixture.used();
+
+  const auto failed = fixture.init({{"a${NOPE}", 1}});
+  ASSERT(!failed);
+  ASSERT(!fixture.published());
+  ASSERT_EQ(fixture.used(), baseline);
+
+  ASSERT_OK(fixture.init({{"abc", 1}}));
+  fixture.destroy();
+  ASSERT_EQ(fixture.used(), baseline);
 }
 
 TEST(GlobMap, ReturnsEveryMatchPastTheFormerResultLimit) {
