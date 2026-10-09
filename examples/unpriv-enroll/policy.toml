@@ -1,3 +1,5 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
 # One role, opened to unprivileged callers and restricted once they are in it.
 #
 # `unpriv-enroll: true` is what lets a process that is not root take this role
@@ -20,7 +22,7 @@
 #   unix-bind: pathname binds are denied and only one abstract socket name is
 #            allowed, demonstrating confinement that filesystem permissions
 #            cannot provide.
-#   enroll absent: bpfjsrv may add no further role to a process in this one, not
+#   enroll absent: neither bpfjsrv nor executable xattrs may add a role, not
 #            even another `sandbox` pod, so the jail cannot be widened or its
 #            pod slots used up from inside.
 #

@@ -243,3 +243,37 @@ static __always_inline bool bpfj_gate_allowed(
 
   return true;
 }
+
+/// Whether the actor's existing roles permit acquiring the target role.
+static __always_inline bool
+bpfj_gate_enroll_allowed(struct bpfj_pid_data *actor,
+                         const struct bpfj_role_policy __arena *target) {
+  if (!target) {
+    return false;
+  }
+  if (!actor) {
+    return true;
+  }
+
+  const __u32 num_pods = bpfj_gate_num_pods(actor);
+  for (int i = BPFJ_MAX_POD_PER_PID - 1; i >= 0; --i) {
+    if (i >= num_pods) {
+      continue;
+    }
+    struct bpfj_pod __arena *pod = actor->pods[i];
+    const struct bpfj_role_policy __arena *policy = bpfj_pod_policy(pod);
+    if (!policy) {
+      return false;
+    }
+    if (policy->enroll_mode != BPFJ_POLICY_ANY &&
+        (policy->enroll_mode != BPFJ_POLICY_ROLES ||
+         !bpfj_role_set_contains(policy->gates[BPFJ_POLICY_GATE_ENROLL],
+                                 target))) {
+      return false;
+    }
+    if (bpfj_is_override(pod)) {
+      break;
+    }
+  }
+  return true;
+}

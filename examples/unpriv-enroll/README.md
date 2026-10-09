@@ -160,3 +160,10 @@ without installing anything. The one difference is where the connection
 arrives: the tool passes it as fd 3 with `LISTEN_FDS=1`, while the unit's
 `StandardInput=socket` puts it on stdin. `bpfjsrv` accepts either and checks
 the descriptor is a connected socket rather than trusting the environment.
+
+The sandbox has no enrollment permission, so both further server enrollment
+and exec-time enrollment through `user.bpfj.policy.exec` are denied, including
+another sandbox pod. An executable carrying that xattr fails with `EACCES`.
+To permit a specific target, add `enroll-roles = ["worker"]` to the sandbox
+role and define the worker role; successful exec keeps sandbox and adds a new
+worker pod. `unpriv-enroll` only opens server requests to non-root callers.
