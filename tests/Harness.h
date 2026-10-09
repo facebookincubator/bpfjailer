@@ -128,6 +128,13 @@ std::string describe(const L& lhs, const R& rhs) {
     }                                                                         \
   } while (false)
 
+#define ASSERT_TRUE(cond) ASSERT(cond)
+#define ASSERT_FALSE(cond) ASSERT(!(cond))
+#define ASSERT_NE(lhs, rhs) ASSERT((lhs) != (rhs))
+#define ASSERT_GT(lhs, rhs) ASSERT((lhs) > (rhs))
+#define ASSERT_GE(lhs, rhs) ASSERT((lhs) >= (rhs))
+#define ASSERT_LE(lhs, rhs) ASSERT((lhs) <= (rhs))
+
 /// @brief Assert an Expected<> holds a value, reporting its error if not.
 #define ASSERT_OK(expr)                                \
   do {                                                 \

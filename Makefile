@@ -191,8 +191,14 @@ BPF_SRCS := \
 	bpfj/enforce/bpf/enroll.bpf.c
 
 TEST_BPF_SRCS := \
+	tests/bpf/const_map_test.bpf.c \
 	tests/bpf/glob_map_test.bpf.c \
-	tests/bpf/mount_snapshot_test.bpf.c
+	tests/bpf/lock_test.bpf.c \
+	tests/bpf/mount_snapshot_test.bpf.c \
+	tests/bpf/perf_map_test.bpf.c \
+	tests/bpf/shared_ptr_test.bpf.c \
+	tests/bpf/str_map_test.bpf.c \
+	tests/bpf/vec_test.bpf.c
 
 BPF_OBJS := $(BPF_SRCS:%.bpf.c=$(BUILD)/%.bpf.o)
 BPF_DEPS := $(BPF_OBJS:.bpf.o=.bpf.d)
@@ -266,11 +272,13 @@ CLIENT_SRCS := client/Main.cpp
 TEST_SRCS := \
 	tests/BpfLogTest.cpp \
 	tests/BpfEnforcerTest.cpp \
+	tests/ConstMapTest.cpp \
 	tests/CtlCommand.cpp \
 	tests/CtlTest.cpp \
 	tests/Enforce.cpp \
 	tests/EnrollGateTest.cpp \
 	tests/ExecEnforcerTest.cpp \
+	tests/FsVerityFileTest.cpp \
 	tests/FsEnforcerTest.cpp \
 	tests/GlobMapTest.cpp \
 	tests/Harness.cpp \
@@ -279,9 +287,13 @@ TEST_SRCS := \
 	tests/KeyringTest.cpp \
 	tests/KillEnforcerTest.cpp \
 	tests/LkmEnforcerTest.cpp \
+	tests/LockTest.cpp \
 	tests/MqEnforcerTest.cpp \
 	tests/MountSnapshotTest.cpp \
+	tests/PerfMapTest.cpp \
+	tests/SharedPtrTest.cpp \
 	tests/ShmEnforcerTest.cpp \
+	tests/StrMapTest.cpp \
 	tests/UnixEnforcerTest.cpp \
 	tests/MountEnforcerTest.cpp \
 	tests/Main.cpp \
@@ -289,6 +301,7 @@ TEST_SRCS := \
 	tests/ProcEnforcerTest.cpp \
 	tests/PolicyTest.cpp \
 	tests/ProtocolTest.cpp \
+	tests/VecTest.cpp \
 	srv/Server.cpp \
 	tests/VerityEnforcerTest.cpp
 
@@ -590,6 +603,12 @@ $(BUILD)/%.o: %.cpp $(SKELS)
 
 $(BUILD)/tests/GlobMapTest.o: $(TEST_SKELS)
 $(BUILD)/tests/MountSnapshotTest.o: $(TEST_SKELS)
+$(BUILD)/tests/ConstMapTest.o: $(TEST_SKELS)
+$(BUILD)/tests/LockTest.o: $(TEST_SKELS)
+$(BUILD)/tests/PerfMapTest.o: $(TEST_SKELS)
+$(BUILD)/tests/SharedPtrTest.o: $(TEST_SKELS)
+$(BUILD)/tests/StrMapTest.o: $(TEST_SKELS)
+$(BUILD)/tests/VecTest.o: $(TEST_SKELS)
 
 # Rewritten only when the mode actually changes, so an unchanged mode leaves
 # the mtime alone and does not drag the binary through a needless relink.

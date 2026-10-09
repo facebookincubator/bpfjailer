@@ -35,6 +35,34 @@ struct Arena {
   }
 };
 
+struct FakeRodata {
+  bool bpfj_heap_enabled{true};
+};
+
+struct FakeBss {
+  bpfj_heap_control* bpfj_heap_ctrl{nullptr};
+};
+
+struct FakeSkel {
+  FakeRodata rodata_;
+  FakeBss bss_;
+
+  FakeRodata& rodata() {
+    return rodata_;
+  }
+
+  FakeBss& bss() {
+    return bss_;
+  }
+};
+
+void initControl(bpfj_heap_control& ctrl, __u32 arenaSize) {
+  ctrl.arena_size = arenaSize;
+  ctrl.current_used = 4096;
+  ctrl.total_alloc = 10;
+  ctrl.total_free = 3;
+}
+
 } // namespace
 
 TEST(Heap, AllocFreeReturnsToZero) {
@@ -84,6 +112,49 @@ TEST(Heap, UserspaceGrowMakesLaterAllocsSucceed) {
     ASSERT_EQ(heap::free(arena.base, off), 0);
   }
   ASSERT_EQ(arena.ctrl->current_used, 0U);
+}
+
+TEST(Heap, ReadStatsReturnsInitializedCounters) {
+  bpfj_heap_control ctrl{};
+  initControl(ctrl, 8192);
+  FakeSkel skel;
+  skel.bss_.bpfj_heap_ctrl = &ctrl;
+  FakeSkel* obj = &skel;
+
+  const auto stats = heap::readStats(obj);
+  ASSERT(stats.has_value());
+  ASSERT_EQ(stats->arenaSize, 8192U);
+  ASSERT_EQ(stats->currentUsed, 4096U);
+  ASSERT_EQ(stats->totalAlloc, 10U);
+  ASSERT_EQ(stats->totalFree, 3U);
+}
+
+TEST(Heap, ReadStatsReturnsEmptyWhenHeapIsDisabled) {
+  bpfj_heap_control ctrl{};
+  initControl(ctrl, 8192);
+  FakeSkel skel;
+  skel.rodata_.bpfj_heap_enabled = false;
+  skel.bss_.bpfj_heap_ctrl = &ctrl;
+  FakeSkel* obj = &skel;
+
+  ASSERT(!heap::readStats(obj).has_value());
+}
+
+TEST(Heap, ReadStatsReturnsEmptyBeforeInitialization) {
+  FakeSkel skel;
+  FakeSkel* obj = &skel;
+
+  ASSERT(!heap::readStats(obj).has_value());
+}
+
+TEST(Heap, ReadStatsReturnsEmptyForAnEmptyArena) {
+  bpfj_heap_control ctrl{};
+  initControl(ctrl, 0);
+  FakeSkel skel;
+  skel.bss_.bpfj_heap_ctrl = &ctrl;
+  FakeSkel* obj = &skel;
+
+  ASSERT(!heap::readStats(obj).has_value());
 }
 
 TEST(Heap, LastPodReferenceReturnsAllocationToArena) {
