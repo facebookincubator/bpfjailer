@@ -31,12 +31,12 @@ static struct task_struct* bpfj_task_from_pid_ns(
     return bpf_task_from_pid(pid);
   }
 
-  unsigned long idr_base = BPF_CORE_READ(ns, idr.idr_base);
+  unsigned long idr_base = bpf_core_cast((ns), typeof(*(ns)))->idr.idr_base;
   if ((unsigned long)pid < idr_base) {
     return NULL;
   }
   unsigned long index = (unsigned long)pid - idr_base;
-  void* entry = BPF_CORE_READ(ns, idr.idr_rt.xa_head);
+  void* entry = bpf_core_cast((ns), typeof(*(ns)))->idr.idr_rt.xa_head;
 
   int i;
   bpf_for(i, 0, 4) {
@@ -143,14 +143,16 @@ int BPF_PROG(bpfj_proc_file_open, struct file* file, int lsm_ret) {
     return lsm_ret;
   }
 
-  struct inode* inode = BPF_CORE_READ(file, f_inode);
-  struct super_block* sb = inode ? BPF_CORE_READ(inode, i_sb) : NULL;
-  const struct super_operations* sops = sb ? BPF_CORE_READ(sb, s_op) : NULL;
+  struct inode* inode = bpf_core_cast((file), typeof(*(file)))->f_inode;
+  struct super_block* sb =
+      inode ? bpf_core_cast((inode), typeof(*(inode)))->i_sb : NULL;
+  const struct super_operations* sops =
+      sb ? bpf_core_cast((sb), typeof(*(sb)))->s_op : NULL;
   if (sops != (const struct super_operations*)&proc_sops) {
     return 0;
   }
 
-  struct dentry* dentry = BPF_CORE_READ(file, f_path.dentry);
+  struct dentry* dentry = bpf_core_cast((file), typeof(*(file)))->f_path.dentry;
   long pid = dentry ? bpfj_proc_pid_from_dentry((__u64)dentry) : 0;
   if (pid <= 0) {
     return 0;
@@ -158,7 +160,7 @@ int BPF_PROG(bpfj_proc_file_open, struct file* file, int lsm_ret) {
 
   // Since Linux 5.6 s_fs_info points at proc_fs_info, whose first member is
   // the pid namespace pointer.
-  void* proc_fs_info = BPF_CORE_READ(sb, s_fs_info);
+  void* proc_fs_info = bpf_core_cast((sb), typeof(*(sb)))->s_fs_info;
   __u64 pid_ns_ptr = 0;
   if (proc_fs_info) {
     bpf_probe_read_kernel(&pid_ns_ptr, sizeof(pid_ns_ptr), proc_fs_info);

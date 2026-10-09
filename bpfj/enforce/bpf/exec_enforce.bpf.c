@@ -134,18 +134,19 @@ int BPF_PROG(bpfj_exec_bprm_check, struct linux_binprm* bprm, int lsm_ret) {
   if (!file) {
     return 0;
   }
-  struct inode* inode = BPF_CORE_READ(file, f_inode);
+  struct inode* inode = bpf_core_cast((file), typeof(*(file)))->f_inode;
   if (!inode) {
     return 0;
   }
 
   __u32 wanted = BPFJ_EXEC_ALLOW_EXEC;
-  const umode_t mode = BPF_CORE_READ(inode, i_mode);
+  const umode_t mode = bpf_core_cast((inode), typeof(*(inode)))->i_mode;
   if (mode & (S_ISUID | S_ISGID)) {
     wanted |= BPFJ_EXEC_ALLOW_SETUID;
   }
   return bpfj_exec_enforce(
-      (uintptr_t)BPF_CORE_READ(file, f_path.dentry), wanted);
+      bpfj_ptr_to_scalar(bpf_core_cast((file), typeof(*(file)))->f_path.dentry),
+      wanted);
 }
 
 static __always_inline bool bpfj_exec_is_kernel_exec(void) {
@@ -168,7 +169,7 @@ int BPF_PROG(
     return 0;
   }
   return bpfj_exec_enforce(
-      (uintptr_t)BPF_CORE_READ(file, f_path.dentry),
+      bpfj_ptr_to_scalar(bpf_core_cast((file), typeof(*(file)))->f_path.dentry),
       BPFJ_EXEC_ALLOW_SHARED_OBJECT);
 }
 
@@ -182,16 +183,17 @@ int BPF_PROG(
   if (lsm_ret) {
     return lsm_ret;
   }
-  if (!vma || !(prot & PROT_EXEC) || (BPF_CORE_READ(vma, vm_flags) & VM_EXEC) ||
+  if (!vma || !(prot & PROT_EXEC) ||
+      (bpf_core_cast((vma), typeof(*(vma)))->vm_flags & VM_EXEC) ||
       bpfj_exec_is_kernel_exec()) {
     return 0;
   }
-  struct file* file = BPF_CORE_READ(vma, vm_file);
+  struct file* file = bpf_core_cast((vma), typeof(*(vma)))->vm_file;
   if (!file) {
     return 0;
   }
   return bpfj_exec_enforce(
-      (uintptr_t)BPF_CORE_READ(file, f_path.dentry),
+      bpfj_ptr_to_scalar(bpf_core_cast((file), typeof(*(file)))->f_path.dentry),
       BPFJ_EXEC_ALLOW_SHARED_OBJECT);
 }
 

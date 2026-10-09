@@ -14,6 +14,12 @@ __noinline u32 bpfj_mount_seqcount() {
       ((const seqlock_t*)&mount_lock), seqcount.seqcount.sequence);
 }
 
+static __always_inline uintptr_t bpfj_ptr_to_scalar(const void* ptr) {
+  uintptr_t out = 0;
+  bpf_probe_read_kernel(&out, sizeof(out), &ptr);
+  return out;
+}
+
 static __always_inline void bpfj_mount_task_cleanup(struct task_struct** task) {
   if (task && *task) {
     bpf_task_release(*task);

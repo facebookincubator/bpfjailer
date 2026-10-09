@@ -282,7 +282,7 @@ static __always_inline int bpfj_unix_address_abstract(
   if (!address) {
     return 0;
   }
-  const int addrlen = BPF_CORE_READ(address, len);
+  const int addrlen = bpf_core_cast((address), typeof(*(address)))->len;
   const struct sockaddr* name = (const struct sockaddr*)&address->name[0];
   return bpfj_unix_sockaddr_abstract(operation, name, addrlen);
 }
@@ -298,7 +298,7 @@ int BPF_PROG(
   if (lsm_ret || (mode & S_IFMT) != S_IFSOCK) {
     return lsm_ret;
   }
-  return bpfj_unix_enforce_path((uintptr_t)dentry, BPFJ_UNIX_BIND);
+  return bpfj_unix_enforce_path(bpfj_ptr_to_scalar(dentry), BPFJ_UNIX_BIND);
 }
 
 SEC("lsm/socket_bind")
@@ -309,7 +309,8 @@ int BPF_PROG(
     int addrlen,
     int lsm_ret) {
   if (lsm_ret || !sock ||
-      BPF_CORE_READ(sock, sk, __sk_common.skc_family) != AF_UNIX) {
+      bpf_core_cast((sock), typeof(*(sock)))->sk->__sk_common.skc_family !=
+          AF_UNIX) {
     return lsm_ret;
   }
   return bpfj_unix_sockaddr_abstract(BPFJ_UNIX_BIND, address, addrlen);
@@ -323,10 +324,11 @@ int BPF_PROG(
     int addrlen,
     int lsm_ret) {
   if (lsm_ret || !sock ||
-      BPF_CORE_READ(sock, sk, __sk_common.skc_family) != AF_UNIX) {
+      bpf_core_cast((sock), typeof(*(sock)))->sk->__sk_common.skc_family !=
+          AF_UNIX) {
     return lsm_ret;
   }
-  const short type = BPF_CORE_READ(sock, type);
+  const short type = bpf_core_cast((sock), typeof(*(sock)))->type;
   if (type != SOCK_STREAM && type != SOCK_SEQPACKET) {
     return 0;
   }
@@ -344,9 +346,11 @@ int BPF_PROG(
     return lsm_ret;
   }
   struct unix_sock* unix_sk = bpf_core_cast(other, struct unix_sock);
-  struct dentry* dentry = BPF_CORE_READ(unix_sk, path.dentry);
-  return dentry ? bpfj_unix_enforce_path((uintptr_t)dentry, BPFJ_UNIX_CONNECT)
-                : 0;
+  struct dentry* dentry =
+      bpf_core_cast((unix_sk), typeof(*(unix_sk)))->path.dentry;
+  return dentry
+      ? bpfj_unix_enforce_path(bpfj_ptr_to_scalar(dentry), BPFJ_UNIX_CONNECT)
+      : 0;
 }
 
 SEC("lsm/unix_may_send")
@@ -355,17 +359,19 @@ int BPF_PROG(
     struct socket* sock,
     struct socket* other,
     int lsm_ret) {
-  if (lsm_ret || !sock || !other || BPF_CORE_READ(sock, type) != SOCK_DGRAM) {
+  if (lsm_ret || !sock || !other ||
+      bpf_core_cast((sock), typeof(*(sock)))->type != SOCK_DGRAM) {
     return lsm_ret;
   }
-  struct sock* other_sk = BPF_CORE_READ(other, sk);
+  struct sock* other_sk = bpf_core_cast((other), typeof(*(other)))->sk;
   if (!other_sk) {
     return 0;
   }
   struct unix_sock* unix_sk = bpf_core_cast(other_sk, struct unix_sock);
-  struct dentry* dentry = BPF_CORE_READ(unix_sk, path.dentry);
+  struct dentry* dentry =
+      bpf_core_cast((unix_sk), typeof(*(unix_sk)))->path.dentry;
   if (dentry) {
-    return bpfj_unix_enforce_path((uintptr_t)dentry, BPFJ_UNIX_DGRAM);
+    return bpfj_unix_enforce_path(bpfj_ptr_to_scalar(dentry), BPFJ_UNIX_DGRAM);
   }
   return 0;
 }
@@ -376,19 +382,20 @@ int BPF_PROG(
     struct socket* sock,
     struct socket* other,
     int lsm_ret) {
-  if (lsm_ret || !sock || !other || BPF_CORE_READ(sock, type) != SOCK_DGRAM) {
+  if (lsm_ret || !sock || !other ||
+      bpf_core_cast((sock), typeof(*(sock)))->type != SOCK_DGRAM) {
     return lsm_ret;
   }
-  struct sock* other_sk = BPF_CORE_READ(other, sk);
+  struct sock* other_sk = bpf_core_cast((other), typeof(*(other)))->sk;
   if (!other_sk) {
     return 0;
   }
   struct unix_sock* unix_sk = bpf_core_cast(other_sk, struct unix_sock);
-  if (BPF_CORE_READ(unix_sk, path.dentry)) {
+  if (bpf_core_cast((unix_sk), typeof(*(unix_sk)))->path.dentry) {
     return 0;
   }
   return bpfj_unix_address_abstract(
-      BPFJ_UNIX_DGRAM, BPF_CORE_READ(unix_sk, addr));
+      BPFJ_UNIX_DGRAM, bpf_core_cast((unix_sk), typeof(*(unix_sk)))->addr);
 }
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";

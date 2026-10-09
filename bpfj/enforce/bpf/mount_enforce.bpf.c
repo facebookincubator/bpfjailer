@@ -351,7 +351,7 @@ static __always_inline const char* bpfj_mount_path_type(
   if (!path) {
     return NULL;
   }
-  return BPF_CORE_READ(path, mnt, mnt_sb, s_type, name);
+  return bpf_core_cast((path), typeof(*(path)))->mnt->mnt_sb->s_type->name;
 }
 
 // A remount path names the mounted root. Match the covered mountpoint instead,
@@ -391,7 +391,8 @@ static __always_inline struct dentry* bpfj_mount_destination(
   if (!vfsmount) {
     return NULL;
   }
-  return bpfj_mountpoint(vfsmount, BPF_CORE_READ(path, dentry));
+  return bpfj_mountpoint(
+      vfsmount, bpf_core_cast((path), typeof(*(path)))->dentry);
 }
 
 SEC("lsm/sb_mount")
@@ -406,7 +407,8 @@ int BPF_PROG(
   if (lsm_ret || !path || (flags & MS_REMOUNT)) {
     return lsm_ret;
   }
-  return bpfj_mount_enforce_path((uintptr_t)BPF_CORE_READ(path, dentry), type);
+  return bpfj_mount_enforce_path(
+      bpfj_ptr_to_scalar(bpf_core_cast((path), typeof(*(path)))->dentry), type);
 }
 
 SEC("lsm/sb_mount")
@@ -422,7 +424,8 @@ int BPF_PROG(
     return lsm_ret;
   }
   return bpfj_mount_enforce_path(
-      (uintptr_t)bpfj_mount_destination(path), bpfj_mount_path_type(path));
+      bpfj_ptr_to_scalar(bpfj_mount_destination(path)),
+      bpfj_mount_path_type(path));
 }
 
 SEC("lsm/sb_mount")
@@ -452,17 +455,17 @@ int BPF_PROG(
     return lsm_ret;
   }
 
-  struct super_block* sb = BPF_CORE_READ(path, mnt, mnt_sb);
+  struct super_block* sb = bpf_core_cast((path), typeof(*(path)))->mnt->mnt_sb;
   if (!sb) {
     return 0;
   }
   const __u64 pid_tgid = bpf_get_current_pid_tgid();
   const struct bpfj_remount_relay relay = {
       .sb = (__u64)sb,
-      .root = (__u64)BPF_CORE_READ(sb, s_root),
-      .type = (__u64)BPF_CORE_READ(sb, s_type),
-      .dev = BPF_CORE_READ(sb, s_dev),
-      .magic = BPF_CORE_READ(sb, s_magic),
+      .root = (__u64)bpf_core_cast((sb), typeof(*(sb)))->s_root,
+      .type = (__u64)bpf_core_cast((sb), typeof(*(sb)))->s_type,
+      .dev = bpf_core_cast((sb), typeof(*(sb)))->s_dev,
+      .magic = bpf_core_cast((sb), typeof(*(sb)))->s_magic,
       .when = bpf_ktime_get_ns(),
   };
   bpf_map_update_elem(&bpfj_remount_relays, &pid_tgid, &relay, BPF_ANY);
@@ -482,10 +485,10 @@ int BPF_PROG(
   struct bpfj_remount_relay* relay =
       bpf_map_lookup_elem(&bpfj_remount_relays, &pid_tgid);
   const bool allowed = relay && relay->sb == (__u64)sb &&
-      relay->root == (__u64)BPF_CORE_READ(sb, s_root) &&
-      relay->type == (__u64)BPF_CORE_READ(sb, s_type) &&
-      relay->dev == BPF_CORE_READ(sb, s_dev) &&
-      relay->magic == BPF_CORE_READ(sb, s_magic) &&
+      relay->root == (__u64)bpf_core_cast((sb), typeof(*(sb)))->s_root &&
+      relay->type == (__u64)bpf_core_cast((sb), typeof(*(sb)))->s_type &&
+      relay->dev == bpf_core_cast((sb), typeof(*(sb)))->s_dev &&
+      relay->magic == bpf_core_cast((sb), typeof(*(sb)))->s_magic &&
       bpf_ktime_get_ns() - relay->when < BPFJ_REMOUNT_RELAY_NS;
   bpf_map_delete_elem(&bpfj_remount_relays, &pid_tgid);
   if (allowed) {
@@ -500,8 +503,8 @@ int BPF_PROG(bpfj_umount, struct vfsmount* mnt, int flags, int lsm_ret) {
     return lsm_ret;
   }
   return bpfj_mount_enforce_umount_path(
-      (uintptr_t)bpfj_mountpoint(
-          mnt, bpf_core_cast(mnt->mnt_root, struct dentry)),
+      bpfj_ptr_to_scalar(
+          bpfj_mountpoint(mnt, bpf_core_cast(mnt->mnt_root, struct dentry))),
       "umount");
 }
 
@@ -515,7 +518,7 @@ int BPF_PROG(
     return lsm_ret;
   }
   return bpfj_mount_enforce_path(
-      (uintptr_t)BPF_CORE_READ(to_path, dentry),
+      bpfj_ptr_to_scalar(bpf_core_cast((to_path), typeof(*(to_path)))->dentry),
       bpfj_mount_path_type(from_path));
 }
 
@@ -533,7 +536,8 @@ int BPF_PROG(
     return 0;
   }
   return bpfj_mount_enforce_umount_path(
-      (uintptr_t)bpfj_mount_destination(from_path), "move mount source");
+      bpfj_ptr_to_scalar(bpfj_mount_destination(from_path)),
+      "move mount source");
 }
 
 SEC("lsm/sb_pivotroot")
@@ -546,7 +550,7 @@ int BPF_PROG(
     return lsm_ret;
   }
   return bpfj_mount_enforce_path(
-      (uintptr_t)bpfj_mount_destination(new_path),
+      bpfj_ptr_to_scalar(bpfj_mount_destination(new_path)),
       bpfj_mount_path_type(new_path));
 }
 
@@ -560,7 +564,7 @@ int BPF_PROG(
     return lsm_ret;
   }
   return bpfj_mount_enforce_umount_path(
-      (uintptr_t)bpfj_mount_destination(old_path), "pivot old root");
+      bpfj_ptr_to_scalar(bpfj_mount_destination(old_path)), "pivot old root");
 }
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";

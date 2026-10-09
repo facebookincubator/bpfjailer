@@ -174,20 +174,23 @@ int BPF_PROG(
 static __always_inline bool bpfj_posix_mq_key(
     struct file* file,
     struct bpfj_posix_mq_key* key) {
-  struct inode* inode = file ? BPF_CORE_READ(file, f_inode) : NULL;
-  struct super_block* sb = inode ? BPF_CORE_READ(inode, i_sb) : NULL;
-  if (!sb || BPF_CORE_READ(sb, s_magic) != BPFJ_MQUEUE_MAGIC) {
+  struct inode* inode =
+      file ? bpf_core_cast((file), typeof(*(file)))->f_inode : NULL;
+  struct super_block* sb =
+      inode ? bpf_core_cast((inode), typeof(*(inode)))->i_sb : NULL;
+  if (!sb || bpf_core_cast((sb), typeof(*(sb)))->s_magic != BPFJ_MQUEUE_MAGIC) {
     return false;
   }
 
-  key->dev = BPF_CORE_READ(sb, s_dev);
-  key->ino = BPF_CORE_READ(inode, i_ino);
+  key->dev = bpf_core_cast((sb), typeof(*(sb)))->s_dev;
+  key->ino = bpf_core_cast((inode), typeof(*(inode)))->i_ino;
   return key->ino != 0;
 }
 
 static __always_inline bool bpfj_is_mqueue_inode(struct inode* inode) {
-  struct super_block* sb = inode ? BPF_CORE_READ(inode, i_sb) : NULL;
-  return sb && BPF_CORE_READ(sb, s_magic) == BPFJ_MQUEUE_MAGIC;
+  struct super_block* sb =
+      inode ? bpf_core_cast((inode), typeof(*(inode)))->i_sb : NULL;
+  return sb && bpf_core_cast((sb), typeof(*(sb)))->s_magic == BPFJ_MQUEUE_MAGIC;
 }
 
 SEC("lsm/inode_alloc_security")
@@ -235,7 +238,8 @@ static __always_inline int bpfj_mq_posix_check(struct file* file) {
 
   const struct bpfj_mq_owner* owner =
       bpf_map_lookup_elem(&bpfj_mq_posix_owners, &key);
-  struct dentry* dentry = file ? BPF_CORE_READ(file, f_path.dentry) : NULL;
+  struct dentry* dentry =
+      file ? bpf_core_cast((file), typeof(*(file)))->f_path.dentry : NULL;
   const struct qstr* name = dentry ? &dentry->d_name : NULL;
   return bpfj_mq_allowed(
              BPFJ_POLICY_GATE_MQ_POSIX,
@@ -257,7 +261,7 @@ int BPF_PROG(bpfj_mq_posix_open, struct file* file, int lsm_ret) {
     return 0;
   }
 
-  struct inode* inode = BPF_CORE_READ(file, f_inode);
+  struct inode* inode = bpf_core_cast((file), typeof(*(file)))->f_inode;
   const __u64 pending_key = (__u64)inode;
   const struct bpfj_mq_pending_owner* pending =
       bpf_map_lookup_elem(&bpfj_mq_posix_pending, &pending_key);
@@ -265,7 +269,7 @@ int BPF_PROG(bpfj_mq_posix_open, struct file* file, int lsm_ret) {
     return bpfj_mq_posix_check(file);
   }
 
-  struct dentry* dentry = BPF_CORE_READ(file, f_path.dentry);
+  struct dentry* dentry = bpf_core_cast((file), typeof(*(file)))->f_path.dentry;
   const struct qstr* name = dentry ? &dentry->d_name : NULL;
   if (!bpfj_mq_allowed(
           BPFJ_POLICY_GATE_MQ_POSIX,
@@ -317,11 +321,13 @@ int BPF_PROG(bpfj_mq_posix_free, struct inode* inode) {
   const bool pending =
       bpf_map_lookup_elem(&bpfj_mq_posix_pending, &pending_key) != NULL;
   const bool mqueue = bpfj_is_mqueue_inode(inode);
-  struct super_block* sb = inode ? BPF_CORE_READ(inode, i_sb) : NULL;
-  const bool unlinked = mqueue && sb && BPF_CORE_READ(inode, i_nlink) == 0;
+  struct super_block* sb =
+      inode ? bpf_core_cast((inode), typeof(*(inode)))->i_sb : NULL;
+  const bool unlinked =
+      mqueue && sb && bpf_core_cast((inode), typeof(*(inode)))->i_nlink == 0;
   const struct bpfj_posix_mq_key key = {
-      .dev = unlinked ? BPF_CORE_READ(sb, s_dev) : 0,
-      .ino = unlinked ? BPF_CORE_READ(inode, i_ino) : 0,
+      .dev = unlinked ? bpf_core_cast((sb), typeof(*(sb)))->s_dev : 0,
+      .ino = unlinked ? bpf_core_cast((inode), typeof(*(inode)))->i_ino : 0,
   };
   const bool owned =
       key.ino != 0 && bpf_map_lookup_elem(&bpfj_mq_posix_owners, &key) != NULL;

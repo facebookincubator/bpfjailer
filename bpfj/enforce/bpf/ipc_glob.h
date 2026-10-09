@@ -72,6 +72,12 @@ __noinline bool bpfj_ipc_glob_bindings_complete(
   return true;
 }
 
+static __always_inline uintptr_t bpfj_ipc_ptr_to_scalar(const void* ptr) {
+  uintptr_t out = 0;
+  bpf_probe_read_kernel(&out, sizeof(out), &ptr);
+  return out;
+}
+
 __noinline int bpfj_ipc_glob_bind_pod(
     struct bpfj_glob_run __arena* run __arg_arena,
     const struct bpfj_glob_map __arena* map __arg_arena,
@@ -179,7 +185,8 @@ static __always_inline bool bpfj_ipc_glob_matches(
   if (name == NULL) {
     return false;
   }
-  u32 len = BPF_CORE_READ(name, len);
-  const unsigned char* chars = BPF_CORE_READ(name, name);
-  return bpfj_ipc_glob_matches_global(patterns, pod, len, (u64)chars);
+  u32 len = bpf_core_cast((name), typeof(*(name)))->len;
+  const unsigned char* chars = bpf_core_cast((name), typeof(*(name)))->name;
+  return bpfj_ipc_glob_matches_global(
+      patterns, pod, len, bpfj_ipc_ptr_to_scalar(chars));
 }

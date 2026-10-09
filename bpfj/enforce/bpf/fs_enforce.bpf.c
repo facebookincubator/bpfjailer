@@ -132,7 +132,7 @@ static __always_inline int bpfj_fs_enforce(uintptr_t dentry, __u32 wanted) {
 }
 
 #define BPFJ_FS_CHECK(_dentry, _mode) \
-  bpfj_fs_enforce((uintptr_t)(_dentry), _mode)
+  bpfj_fs_enforce(bpfj_ptr_to_scalar(_dentry), _mode)
 
 static __always_inline bool bpfj_fs_current_enrolled(void) {
   struct bpfj_pid_data* pid_data = bpfj_get_current_pid_data();
@@ -145,8 +145,9 @@ int BPF_PROG(bpfj_fs_file_open, struct file* file, int lsm_ret) {
     return lsm_ret;
   }
   return BPFJ_FS_CHECK(
-      BPF_CORE_READ(file, f_path.dentry),
-      BPF_CORE_READ(file, f_mode) & (FMODE_READ | FMODE_WRITE));
+      bpf_core_cast((file), typeof(*(file)))->f_path.dentry,
+      bpf_core_cast((file), typeof(*(file)))->f_mode &
+          (FMODE_READ | FMODE_WRITE));
 }
 
 SEC("lsm/inode_unlink")
@@ -250,7 +251,9 @@ int BPF_PROG(
   if (lsm_ret) {
     return lsm_ret;
   }
-  int ret = BPFJ_FS_CHECK(BPF_CORE_READ(new_dentry, d_parent), FMODE_WRITE);
+  int ret = BPFJ_FS_CHECK(
+      bpf_core_cast((new_dentry), typeof(*(new_dentry)))->d_parent,
+      FMODE_WRITE);
   if (ret) {
     return ret;
   }
@@ -284,8 +287,10 @@ int BPF_PROG(
     struct dentry* dentry,
     umode_t mode,
     int lsm_ret) {
-  return lsm_ret ? lsm_ret
-                 : BPFJ_FS_CHECK(BPF_CORE_READ(dentry, d_parent), FMODE_WRITE);
+  return lsm_ret
+      ? lsm_ret
+      : BPFJ_FS_CHECK(
+            bpf_core_cast((dentry), typeof(*(dentry)))->d_parent, FMODE_WRITE);
 }
 
 SEC("lsm/inode_setattr")
@@ -300,8 +305,10 @@ int BPF_PROG(
 
 SEC("lsm/inode_getattr")
 int BPF_PROG(bpfj_fs_inode_getattr, const struct path* path, int lsm_ret) {
-  return lsm_ret ? lsm_ret
-                 : BPFJ_FS_CHECK(BPF_CORE_READ(path, dentry), FMODE_READ);
+  return lsm_ret
+      ? lsm_ret
+      : BPFJ_FS_CHECK(
+            bpf_core_cast((path), typeof(*(path)))->dentry, FMODE_READ);
 }
 
 SEC("lsm/inode_setxattr")
@@ -348,8 +355,10 @@ int BPF_PROG(
     struct dentry* dentry,
     const char* old_name,
     int lsm_ret) {
-  return lsm_ret ? lsm_ret
-                 : BPFJ_FS_CHECK(BPF_CORE_READ(dentry, d_parent), FMODE_WRITE);
+  return lsm_ret
+      ? lsm_ret
+      : BPFJ_FS_CHECK(
+            bpf_core_cast((dentry), typeof(*(dentry)))->d_parent, FMODE_WRITE);
 }
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";

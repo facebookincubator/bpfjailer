@@ -183,12 +183,13 @@ int BPF_PROG(
 static __always_inline bool bpfj_posix_shm_key_from_inode(
     struct inode* inode,
     struct bpfj_posix_shm_key* key) {
-  struct super_block* sb = inode ? BPF_CORE_READ(inode, i_sb) : NULL;
-  if (!sb || BPF_CORE_READ(sb, s_magic) != BPFJ_TMPFS_MAGIC) {
+  struct super_block* sb =
+      inode ? bpf_core_cast((inode), typeof(*(inode)))->i_sb : NULL;
+  if (!sb || bpf_core_cast((sb), typeof(*(sb)))->s_magic != BPFJ_TMPFS_MAGIC) {
     return false;
   }
-  key->dev = BPF_CORE_READ(sb, s_dev);
-  key->ino = BPF_CORE_READ(inode, i_ino);
+  key->dev = bpf_core_cast((sb), typeof(*(sb)))->s_dev;
+  key->ino = bpf_core_cast((inode), typeof(*(inode)))->i_ino;
   return key->ino != 0;
 }
 
@@ -197,12 +198,13 @@ static __always_inline bool bpfj_posix_shm_key_from_inode(
 // the exact registered mount before promoting the pending owner to {dev, ino}.
 static __always_inline bool bpfj_posix_shm_registered_device(
     struct inode* inode) {
-  struct super_block* sb = inode ? BPF_CORE_READ(inode, i_sb) : NULL;
-  if (!sb || BPF_CORE_READ(sb, s_magic) != BPFJ_TMPFS_MAGIC) {
+  struct super_block* sb =
+      inode ? bpf_core_cast((inode), typeof(*(inode)))->i_sb : NULL;
+  if (!sb || bpf_core_cast((sb), typeof(*(sb)))->s_magic != BPFJ_TMPFS_MAGIC) {
     return false;
   }
 
-  const __u64 dev = BPF_CORE_READ(sb, s_dev);
+  const __u64 dev = bpf_core_cast((sb), typeof(*(sb)))->s_dev;
   return bpf_map_lookup_elem(&bpfj_shm_posix_devices, &dev) != NULL;
 }
 
@@ -210,7 +212,8 @@ static __always_inline bool bpfj_posix_shm_key_from_file(
     struct file* file,
     struct bpfj_posix_shm_key* key) {
   return file &&
-      bpfj_posix_shm_key_from_inode(BPF_CORE_READ(file, f_inode), key);
+      bpfj_posix_shm_key_from_inode(
+             bpf_core_cast((file), typeof(*(file)))->f_inode, key);
 }
 
 static __always_inline bool bpfj_posix_shm_mount_registered(
@@ -221,16 +224,18 @@ static __always_inline bool bpfj_posix_shm_mount_registered(
   }
 
   struct task_struct* task = bpf_get_current_task_btf();
-  struct nsproxy* nsproxy = task ? BPF_CORE_READ(task, nsproxy) : NULL;
-  struct mnt_namespace* ns = nsproxy ? BPF_CORE_READ(nsproxy, mnt_ns) : NULL;
+  struct nsproxy* nsproxy =
+      task ? bpf_core_cast((task), typeof(*(task)))->nsproxy : NULL;
+  struct mnt_namespace* ns =
+      nsproxy ? bpf_core_cast((nsproxy), typeof(*(nsproxy)))->mnt_ns : NULL;
   if (!ns) {
     return false;
   }
 
   struct mount* mount = container_of(vfsmnt, struct mount, mnt);
   struct bpfj_shm_mount_key key = {
-      .namespace_ino = BPF_CORE_READ(ns, ns.inum),
-      .mount_id = BPF_CORE_READ(mount, mnt_id),
+      .namespace_ino = bpf_core_cast((ns), typeof(*(ns)))->ns.inum,
+      .mount_id = bpf_core_cast((mount), typeof(*(mount)))->mnt_id,
   };
   const __u64* registered_dev =
       bpf_map_lookup_elem(&bpfj_shm_posix_mounts, &key);
@@ -248,7 +253,7 @@ static __always_inline int bpfj_posix_shm_check(
   const struct bpfj_shm_owner* owner =
       bpf_map_lookup_elem(&bpfj_shm_posix_owners, &key);
   if (!owner && require_registered_mount) {
-    struct vfsmount* mnt = BPF_CORE_READ(file, f_path.mnt);
+    struct vfsmount* mnt = bpf_core_cast((file), typeof(*(file)))->f_path.mnt;
     if (!bpfj_posix_shm_mount_registered(mnt, key.dev)) {
       return 0;
     }
@@ -256,7 +261,8 @@ static __always_inline int bpfj_posix_shm_check(
     return 0;
   }
 
-  struct dentry* dentry = file ? BPF_CORE_READ(file, f_path.dentry) : NULL;
+  struct dentry* dentry =
+      file ? bpf_core_cast((file), typeof(*(file)))->f_path.dentry : NULL;
   const struct qstr* name = dentry ? &dentry->d_name : NULL;
   return bpfj_shm_allowed(
              BPFJ_POLICY_GATE_SHM_POSIX,
@@ -328,12 +334,12 @@ int BPF_PROG(bpfj_shm_posix_open, struct file* file, int lsm_ret) {
     return bpfj_posix_shm_check(file, false);
   }
 
-  struct vfsmount* mnt = BPF_CORE_READ(file, f_path.mnt);
+  struct vfsmount* mnt = bpf_core_cast((file), typeof(*(file)))->f_path.mnt;
   if (!bpfj_posix_shm_mount_registered(mnt, object.dev)) {
     return 0;
   }
 
-  struct inode* inode = BPF_CORE_READ(file, f_inode);
+  struct inode* inode = bpf_core_cast((file), typeof(*(file)))->f_inode;
   const __u64 pending_key = (__u64)inode;
   const struct bpfj_shm_pending_owner* pending =
       bpf_map_lookup_elem(&bpfj_shm_posix_pending, &pending_key);
@@ -341,7 +347,7 @@ int BPF_PROG(bpfj_shm_posix_open, struct file* file, int lsm_ret) {
     return bpfj_posix_shm_check(file, true);
   }
 
-  struct dentry* dentry = BPF_CORE_READ(file, f_path.dentry);
+  struct dentry* dentry = bpf_core_cast((file), typeof(*(file)))->f_path.dentry;
   const struct qstr* name = dentry ? &dentry->d_name : NULL;
   if (!bpfj_shm_allowed(
           BPFJ_POLICY_GATE_SHM_POSIX,
@@ -415,17 +421,20 @@ int BPF_PROG(
     unsigned long prot,
     int lsm_ret) {
   if (lsm_ret || !vma ||
-      !(prot & ~BPF_CORE_READ(vma, vm_flags) & BPFJ_VM_ACCESS_FLAGS)) {
+      !(prot & ~bpf_core_cast((vma), typeof(*(vma)))->vm_flags &
+        BPFJ_VM_ACCESS_FLAGS)) {
     return lsm_ret;
   }
-  struct file* file = vma ? BPF_CORE_READ(vma, vm_file) : NULL;
+  struct file* file =
+      vma ? bpf_core_cast((vma), typeof(*(vma)))->vm_file : NULL;
   return bpfj_posix_shm_check(file, true);
 }
 
 static __always_inline int bpfj_posix_shm_path_check(
     const struct path* path,
     struct dentry* dentry) {
-  struct inode* inode = dentry ? BPF_CORE_READ(dentry, d_inode) : NULL;
+  struct inode* inode =
+      dentry ? bpf_core_cast((dentry), typeof(*(dentry)))->d_inode : NULL;
   struct bpfj_posix_shm_key object = {};
   if (!bpfj_posix_shm_key_from_inode(inode, &object)) {
     return 0;
@@ -433,7 +442,8 @@ static __always_inline int bpfj_posix_shm_path_check(
 
   const struct bpfj_shm_owner* owner =
       bpf_map_lookup_elem(&bpfj_shm_posix_owners, &object);
-  struct vfsmount* mnt = path ? BPF_CORE_READ(path, mnt) : NULL;
+  struct vfsmount* mnt =
+      path ? bpf_core_cast((path), typeof(*(path)))->mnt : NULL;
   if (!owner && !bpfj_posix_shm_mount_registered(mnt, object.dev)) {
     return 0;
   }
@@ -463,7 +473,8 @@ int BPF_PROG(
 
 SEC("lsm/path_truncate")
 int BPF_PROG(bpfj_shm_posix_truncate, const struct path* path, int lsm_ret) {
-  struct dentry* dentry = path ? BPF_CORE_READ(path, dentry) : NULL;
+  struct dentry* dentry =
+      path ? bpf_core_cast((path), typeof(*(path)))->dentry : NULL;
   return lsm_ret ? lsm_ret : bpfj_posix_shm_path_check(path, dentry);
 }
 
@@ -481,7 +492,7 @@ int BPF_PROG(bpfj_shm_posix_free, struct inode* inode) {
   const bool pending =
       bpf_map_lookup_elem(&bpfj_shm_posix_pending, &pending_key) != NULL;
   struct bpfj_posix_shm_key key = {};
-  const bool owned = BPF_CORE_READ(inode, i_nlink) == 0 &&
+  const bool owned = bpf_core_cast((inode), typeof(*(inode)))->i_nlink == 0 &&
       bpfj_posix_shm_key_from_inode(inode, &key) &&
       bpf_map_lookup_elem(&bpfj_shm_posix_owners, &key) != NULL;
   if (!pending && !owned) {
