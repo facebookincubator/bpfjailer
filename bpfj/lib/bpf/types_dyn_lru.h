@@ -101,7 +101,7 @@ struct bpfj_dyn_lru {
   struct bpfj_lock lock;
 };
 
-// Test scaffolding shared by DynLruTests.cpp and tests/bpf/dyn_lru_map.bpf.c:
+// Test scaffolding shared by DynLruTest.cpp and tests/bpf/dyn_lru_test.bpf.c:
 // order matters for an LRU, so tests drive a scripted sequence against one map
 // rather than one op per run.
 

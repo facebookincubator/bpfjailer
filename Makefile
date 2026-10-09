@@ -192,7 +192,10 @@ BPF_SRCS := \
 
 TEST_BPF_SRCS := \
 	tests/bpf/const_map_test.bpf.c \
+	tests/bpf/dyn_lru_test.bpf.c \
+	tests/bpf/dyn_map_test.bpf.c \
 	tests/bpf/glob_map_test.bpf.c \
+	tests/bpf/heap_bpf_test.bpf.c \
 	tests/bpf/lock_test.bpf.c \
 	tests/bpf/mount_snapshot_test.bpf.c \
 	tests/bpf/perf_map_test.bpf.c \
@@ -275,6 +278,8 @@ TEST_SRCS := \
 	tests/ConstMapTest.cpp \
 	tests/CtlCommand.cpp \
 	tests/CtlTest.cpp \
+	tests/DynLruTest.cpp \
+	tests/DynMapTest.cpp \
 	tests/Enforce.cpp \
 	tests/EnrollGateTest.cpp \
 	tests/ExecEnforcerTest.cpp \
@@ -283,6 +288,7 @@ TEST_SRCS := \
 	tests/GlobMapTest.cpp \
 	tests/Harness.cpp \
 	tests/HarnessTest.cpp \
+	tests/HeapBpfTest.cpp \
 	tests/HeapTest.cpp \
 	tests/KeyringTest.cpp \
 	tests/KillEnforcerTest.cpp \
@@ -604,6 +610,9 @@ $(BUILD)/%.o: %.cpp $(SKELS)
 $(BUILD)/tests/GlobMapTest.o: $(TEST_SKELS)
 $(BUILD)/tests/MountSnapshotTest.o: $(TEST_SKELS)
 $(BUILD)/tests/ConstMapTest.o: $(TEST_SKELS)
+$(BUILD)/tests/DynLruTest.o: $(TEST_SKELS)
+$(BUILD)/tests/DynMapTest.o: $(TEST_SKELS)
+$(BUILD)/tests/HeapBpfTest.o: $(TEST_SKELS)
 $(BUILD)/tests/LockTest.o: $(TEST_SKELS)
 $(BUILD)/tests/PerfMapTest.o: $(TEST_SKELS)
 $(BUILD)/tests/SharedPtrTest.o: $(TEST_SKELS)

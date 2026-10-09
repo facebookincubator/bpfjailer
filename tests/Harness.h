@@ -131,6 +131,7 @@ std::string describe(const L& lhs, const R& rhs) {
 #define ASSERT_TRUE(cond) ASSERT(cond)
 #define ASSERT_FALSE(cond) ASSERT(!(cond))
 #define ASSERT_NE(lhs, rhs) ASSERT((lhs) != (rhs))
+#define ASSERT_LT(lhs, rhs) ASSERT((lhs) < (rhs))
 #define ASSERT_GT(lhs, rhs) ASSERT((lhs) > (rhs))
 #define ASSERT_GE(lhs, rhs) ASSERT((lhs) >= (rhs))
 #define ASSERT_LE(lhs, rhs) ASSERT((lhs) <= (rhs))

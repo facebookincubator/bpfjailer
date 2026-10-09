@@ -93,6 +93,20 @@ TEST(Heap, ReusesAFreedBlock) {
   ASSERT_EQ(arena.ctrl->current_used, 0U);
 }
 
+TEST(Heap, DoubleFreeIsIgnored) {
+  Arena arena;
+
+  const long offset = heap::alloc(arena.base, 128);
+  ASSERT(offset > 0);
+  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(offset)), 0);
+  ASSERT_EQ(arena.ctrl->total_free, 1U);
+  ASSERT_EQ(arena.ctrl->current_used, 0U);
+
+  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(offset)), 0);
+  ASSERT_EQ(arena.ctrl->total_free, 1U);
+  ASSERT_EQ(arena.ctrl->current_used, 0U);
+}
+
 TEST(Heap, UserspaceGrowMakesLaterAllocsSucceed) {
   Arena arena;
 
