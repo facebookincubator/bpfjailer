@@ -272,6 +272,15 @@ TEST(GlobMap, VariablesSupportBoundEmptyAndPoisonedValues) {
   assertValues(fixture.lookup("literal"), {3});
 }
 
+TEST(GlobMap, BareDollarNameIsLiteral) {
+  GlobFixture fixture;
+  ASSERT_OK(fixture.init({{"$V", 1}, {"${V}", 2}}));
+
+  fixture.bind(1, "value", 5);
+  assertValues(fixture.lookup("$V"), {1});
+  assertValues(fixture.lookup("value"), {2});
+}
+
 TEST(GlobMap, EmptyMapMatchesNothing) {
   GlobFixture fixture;
   ASSERT_OK(fixture.init({}));

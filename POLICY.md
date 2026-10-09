@@ -32,7 +32,7 @@ allow = true
 access = "read-only"
 
 [[roles.worker.paths]]
-path = "/srv/$service"
+path = "/srv/${service}"
 allow = true
 access = "read-write"
 ```
@@ -94,7 +94,7 @@ pod variable bindings and are invalidated by relevant filesystem changes.
 
 Every path-based policy is an array of rule tables with a `path` and boolean
 `allow`. `paths` rules apply recursively and the longest matching path wins.
-They support literal components, a `*` component, and `$NAME` components with
+They support literal components, a `*` component, and `${NAME}` components with
 an optional glob suffix. `*` matches one component; recursive `**` is not
 supported because a directory rule already covers its subtree. The variable
 must be declared by top-level `vars` and present on the pod for the dependent
@@ -108,7 +108,7 @@ Allowed rules require a nonempty `permissions` array containing `exec`,
 binaries need both `exec` and `set-id`, while executable mmap or mprotect needs
 `shared-object`.
 The longest matching path wins. At equal depth, the rule with more non-wildcard
-components wins; a bound `$NAME` component is specific, while `*` is not. An
+components wins; a bound `${NAME}` component is specific, while `*` is not. An
 equally specific denial wins a tie. `exec-any = true`
 opens all three operations and is mutually exclusive with `exec-paths`;
 `any: true` supplies the same open behavior only when neither narrower option
@@ -163,8 +163,8 @@ metacharacter. System V IPC is not name-matched.
 
 Variable-expanded matchers inspect only the first four variables carried by a
 pod, and a bound value may be at most 39 bytes to match. Longer values and the
-remaining variables are valid pod metadata but do not satisfy `$NAME` or
-`${NAME}` references.
+remaining variables are valid pod metadata but do not satisfy `${NAME}`
+references.
 
 ## Resource ownership and capabilities
 

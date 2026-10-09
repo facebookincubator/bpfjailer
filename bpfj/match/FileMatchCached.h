@@ -3,7 +3,6 @@
 #pragma once
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -55,16 +54,6 @@ inline std::string fileMatchGlobEscape(std::string_view value) {
   return out;
 }
 
-inline std::size_t fileMatchVarLength(std::string_view component) {
-  std::size_t length = 1;
-  while (length < component.size() &&
-         (std::isalnum(static_cast<unsigned char>(component[length])) != 0 ||
-          component[length] == '_')) {
-    ++length;
-  }
-  return length;
-}
-
 inline std::string fileMatchVarSuffix(std::string_view suffix) {
   std::string out;
   out.reserve(suffix.size());
@@ -83,10 +72,17 @@ inline std::string fileMatchComponentPattern(
   if (component == "*") {
     return "*";
   }
-  if (variablesEnabled && !component.empty() && component.front() == '$') {
-    const auto length = fileMatchVarLength(component);
-    return "${" + std::string(component.substr(0, length)) + "}" +
-        fileMatchVarSuffix(component.substr(length));
+  // GlobMap's public variable syntax is ${NAME}. Preserve that spelling while
+  // escaping only the optional trailing glob suffix. An unterminated
+  // reference is deliberately passed through so GlobMap reports its precise
+  // compile error.
+  if (variablesEnabled && component.starts_with("${")) {
+    const auto end = component.find('}', 2);
+    if (end == std::string_view::npos) {
+      return std::string(component);
+    }
+    return std::string(component.substr(0, end + 1)) +
+        fileMatchVarSuffix(component.substr(end + 1));
   }
   if (component == "\\*") {
     return "\\*";

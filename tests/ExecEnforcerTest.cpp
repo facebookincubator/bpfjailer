@@ -325,7 +325,7 @@ TEST(ExecEnforcer, BoundVariableComponentIsSpecific) {
       "vars = [\"PROGRAM\"]\n[roles.svc]\n" +
       rule("svc", "/usr/lib64/*", false, false, true) +
       rule("svc", directory + "/*", false, false, false) +
-      rule("svc", directory + "/$PROGRAM", true, false, false));
+      rule("svc", directory + "/${PROGRAM}", true, false, false));
 
   Child actor([&] { return runProgram(executable.string()); });
   const std::array vars{PodVar{.name = "PROGRAM", .value = program}};

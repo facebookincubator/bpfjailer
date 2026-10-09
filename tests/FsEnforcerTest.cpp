@@ -320,7 +320,7 @@ TEST(FsEnforcer, CacheSeparatesPodsWithDifferentVariableBindings) {
 
   const Policy policy = policyOf(
       "vars = [\"USER\"]\n[roles.svc]\n" + rule(root, "read-only") +
-      rule(std::string(root) + "/$USER/data", std::nullopt));
+      rule(std::string(root) + "/${USER}/data", std::nullopt));
   loadJailer(policy);
   ASSERT_OK(FsEnforcer::load(testPins(), policy));
 
@@ -350,5 +350,56 @@ TEST(FsEnforcer, CacheSeparatesPodsWithDifferentVariableBindings) {
 
   ASSERT_EQ(::unlink(file.c_str()), 0);
   ASSERT_EQ(::rmdir(alice.c_str()), 0);
+  ASSERT_EQ(::rmdir(root), 0);
+}
+
+TEST(FsEnforcer, BareDollarVariableNameIsLiteral) {
+  char root[] = "/tmp/bpfj-fs-literal-var-test-XXXXXX";
+  ASSERT(::mkdtemp(root) != nullptr);
+  const std::string literalDir = std::string(root) + "/$USER";
+  const std::string boundDir = std::string(root) + "/alice";
+  ASSERT_EQ(::mkdir(literalDir.c_str(), 0700), 0);
+  ASSERT_EQ(::mkdir(boundDir.c_str(), 0700), 0);
+  const std::string literalFile = literalDir + "/data";
+  const std::string boundFile = boundDir + "/data";
+  for (const auto& file : {literalFile, boundFile}) {
+    int fd = ::open(file.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+    ASSERT(fd >= 0);
+    ASSERT_EQ(::close(fd), 0);
+  }
+
+  const Policy policy = policyOf(
+      "vars = [\"USER\"]\n[roles.svc]\n" + rule(root, "read-only") +
+      rule(std::string(root) + "/$USER/data", std::nullopt));
+  loadJailer(policy);
+  ASSERT_OK(FsEnforcer::load(testPins(), policy));
+  const std::array<bpfjailer::PodVar, 1> vars{{{"USER", "alice"}}};
+
+  Child literalPod([&] { return openErrno(literalFile, O_RDONLY); });
+  ASSERT_OK(
+      bpfjailer::enrollPod(
+          testPins(),
+          "svc",
+          "literal@meta",
+          vars,
+          literalPod.pid(),
+          bpfjailer::Threads::All));
+  ASSERT_EQ(literalPod.run(), EACCES);
+
+  Child boundPod([&] { return openErrno(boundFile, O_RDONLY); });
+  ASSERT_OK(
+      bpfjailer::enrollPod(
+          testPins(),
+          "svc",
+          "bound@meta",
+          vars,
+          boundPod.pid(),
+          bpfjailer::Threads::All));
+  ASSERT_EQ(boundPod.run(), 0);
+
+  ASSERT_EQ(::unlink(literalFile.c_str()), 0);
+  ASSERT_EQ(::unlink(boundFile.c_str()), 0);
+  ASSERT_EQ(::rmdir(literalDir.c_str()), 0);
+  ASSERT_EQ(::rmdir(boundDir.c_str()), 0);
   ASSERT_EQ(::rmdir(root), 0);
 }

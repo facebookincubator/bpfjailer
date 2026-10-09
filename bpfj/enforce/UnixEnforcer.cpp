@@ -165,9 +165,6 @@ Expected<> UnixEnforcer::load(
   const GlobKeyResolver resolveVariable =
       [ids = std::move(variableIds)](
           std::string_view name) -> err::Expected<__u32> {
-    if (name.starts_with('$')) {
-      name.remove_prefix(1);
-    }
     const auto found = ids.find(std::string(name));
     if (found == ids.end()) {
       return err::Error(
