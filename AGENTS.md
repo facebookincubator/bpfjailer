@@ -14,11 +14,12 @@ BpfJailer is an eBPF based Mandatory Access Control system. BPF LSM programs put
 - tests/ is the bpfjtest suite, and tests/verity/Makefile builds the signed fixtures for the fs-verity tests.
 - examples/ has end to end scripts for a signed bpfjcmd and for unprivileged enrollment.
 - BUCK and defs.bzl package the standalone tree and generate its VM test runner. Every Buck subpackage containing a standalone Makefile input must call `oss_make_sources()`, and the root BUCK file must include that filegroup in `OSS_MAKE_SOURCE_PACKAGES`.
+- .github/workflows/ci.yml runs GitHub Actions CI. .github/vmtest/ builds kernels and runs `make test` with virtme-ng. Add kernel options required by tests to .github/vmtest/kernel.config.
 - toml/ contains the vendored toml++ single-header parser.
 
 ## Building and testing
 
-`make` builds build/bpfjctl, `make test` builds and runs bpfjtest, and `make config` prints the resolved toolchain. Requires clang, bpftool, a C++20 compiler, libbpf and libkeyutils, and a checkout of https://github.com/libbpf/libarena passed as `LIBARENA=<path>` (or exported) on every `make`.
+`make` builds build/bpfjctl, `make test` builds and runs bpfjtest, and `make config` prints the resolved toolchain. Requires clang 22 or newer, bpftool, a C++20 compiler, libbpf and libkeyutils, and a checkout of https://github.com/libbpf/libarena passed as `LIBARENA=<path>` (or exported) on every `make`. The running kernel needs `CONFIG_BTRFS_FS=y` for vmlinux.h.
 
 BpfJailer is only tested on 6.16+ kernels and support for anything older is not guaranteed. Kernel features available from 6.16 may be used freely, without fallbacks for older kernels.
 

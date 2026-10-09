@@ -1,0 +1,86 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  vmtest:
+    name: make test on ${{ matrix.kernel }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ["6.16", "6.18", stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo bash .github/vmtest/install-deps.sh /opt/bpfj-ci
+          echo /opt/bpfj-ci/bin >> "$GITHUB_PATH"
+
+      - name: Resolve the kernel release
+        id: kernel
+        env:
+          KERNEL: ${{ matrix.kernel }}
+        run: |
+          version=$(bash .github/vmtest/kernel-version.sh "$KERNEL")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the kernel
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/kernel
+          key: kernel-x86_64-${{ steps.kernel.outputs.version }}-${{ hashFiles('.github/vmtest/kernel.config', '.github/vmtest/build-kernel.sh', '.github/vmtest/install-deps.sh') }}
+
+      - name: Build the kernel
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          VERSION: ${{ steps.kernel.outputs.version }}
+        run: bash .github/vmtest/build-kernel.sh "$VERSION" ~/kernel
+
+      - name: Save the kernel
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/kernel
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Let the runner user open /dev/kvm
+        run: sudo chmod 666 /dev/kvm
+
+      - name: make test in a VM
+        run: bash .github/vmtest/vm.sh ~/kernel/bzImage /opt/bpfj-ci
+
+  client:
+    name: bpfjclient without libbpf or clang
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    steps:
+      - name: Install only a C++ toolchain
+        run: apt-get update && apt-get install -y --no-install-recommends g++ make
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: make client
+        run: make client

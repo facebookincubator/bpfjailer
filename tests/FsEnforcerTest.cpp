@@ -79,7 +79,7 @@ void attach(const std::string& paths) {
 
 [[nodiscard]] int openErrno(const std::string& path, int flags) {
   errno = 0;
-  const int fd = ::open(path.c_str(), flags | O_CLOEXEC);
+  const int fd = ::open(path.c_str(), flags | O_CLOEXEC, 0600);
   if (fd < 0) {
     return errno;
   }

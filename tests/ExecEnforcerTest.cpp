@@ -3,6 +3,7 @@
 #include "tests/Enforce.h"
 #include "tests/Harness.h"
 
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -35,6 +36,16 @@ constexpr int kRanAndFailed = -1;
 
 [[nodiscard]] std::string truePath() {
   return std::filesystem::canonical("/bin/true").string();
+}
+
+[[nodiscard]] std::string sharedObjects() {
+  // Skip the executable's PLT when locating libc.
+  void* symbol = ::dlsym(RTLD_NEXT, "getpid");
+  ASSERT(symbol != nullptr);
+  Dl_info info{};
+  ASSERT(::dladdr(symbol, &info) != 0);
+  return std::filesystem::canonical(info.dli_fname).parent_path().string() +
+      "/*";
 }
 
 [[nodiscard]] std::string uniquePath(const std::string& prefix) {
@@ -79,7 +90,7 @@ constexpr int kRanAndFailed = -1;
     bool allowSetuid = false,
     bool allowSharedObjects = true) {
   return "[roles.svc]\n" +
-      rule("svc", "/usr/lib64/*", false, false, allowSharedObjects) +
+      rule("svc", sharedObjects(), false, false, allowSharedObjects) +
       rule("svc", executable, allowExec, allowSetuid, false);
 }
 
@@ -282,7 +293,7 @@ TEST(ExecEnforcer, ReadOnlyFilesystemDoesNotDecideExecution) {
   attachWithFilesystem(
       "[[roles.svc.paths]]\npath = \"/\"\nallow = true\n"
       "access = \"read-only\"\n" +
-      rule("svc", "/usr/lib64/*", false, false, true) +
+      rule("svc", sharedObjects(), false, false, true) +
       rule("svc", executable, true, false, false));
 
   Child actor([&] { return runProgram(executable); });
@@ -295,7 +306,7 @@ TEST(ExecEnforcer, LongestPathMatchWins) {
   const std::string executable = truePath();
   attach(
       "[roles.svc]\n" + rule("svc", "/usr", false, false, false) +
-      rule("svc", "/usr/lib64/*", false, false, true) +
+      rule("svc", sharedObjects(), false, false, true) +
       rule("svc", executable, true, false, false));
 
   Child actor([&] { return runProgram(executable); });
@@ -307,7 +318,7 @@ TEST(ExecEnforcer, LongestPathMatchWins) {
 TEST(ExecEnforcer, MoreSpecificPathWinsAtSameDepth) {
   const std::string executable = truePath();
   attach(
-      "[roles.svc]\n" + rule("svc", "/usr/lib64/*", false, false, true) +
+      "[roles.svc]\n" + rule("svc", sharedObjects(), false, false, true) +
       rule("svc", "/usr/bin/*", false, false, false) +
       rule("svc", executable, true, false, false));
 
@@ -323,7 +334,7 @@ TEST(ExecEnforcer, BoundVariableComponentIsSpecific) {
   const std::string program = executable.filename().string();
   attach(
       "vars = [\"PROGRAM\"]\n[roles.svc]\n" +
-      rule("svc", "/usr/lib64/*", false, false, true) +
+      rule("svc", sharedObjects(), false, false, true) +
       rule("svc", directory + "/*", false, false, false) +
       rule("svc", directory + "/$PROGRAM", true, false, false));
 
@@ -337,7 +348,7 @@ TEST(ExecEnforcer, BoundVariableComponentIsSpecific) {
 TEST(ExecEnforcer, MoreSpecificDenialWinsAtSameDepth) {
   const std::string executable = truePath();
   attach(
-      "[roles.svc]\n" + rule("svc", "/usr/lib64/*", false, false, true) +
+      "[roles.svc]\n" + rule("svc", sharedObjects(), false, false, true) +
       rule("svc", "/usr/bin/*", true, false, false) +
       rule("svc", executable, false, false, false));
 
@@ -350,7 +361,7 @@ TEST(ExecEnforcer, MoreSpecificDenialWinsAtSameDepth) {
 TEST(ExecEnforcer, DenialWinsEquallySpecificTie) {
   const std::string executable = truePath();
   attach(
-      "[roles.svc]\n" + rule("svc", "/usr/lib64/*", false, false, true) +
+      "[roles.svc]\n" + rule("svc", sharedObjects(), false, false, true) +
       rule("svc", "/usr/*/true", true, false, false) +
       rule("svc", "/usr/bin/*", false, false, false));
 
@@ -364,9 +375,9 @@ TEST(ExecEnforcer, EveryStackedRoleMustAllowExec) {
   const std::string executable = truePath();
   attach(
       "[roles.allow]\n[roles.deny]\n" +
-      rule("allow", "/usr/lib64/*", false, false, true) +
+      rule("allow", sharedObjects(), false, false, true) +
       rule("allow", executable, true, false, false) +
-      rule("deny", "/usr/lib64/*", false, false, true) +
+      rule("deny", sharedObjects(), false, false, true) +
       rule("deny", executable, false, false, false));
 
   Child actor([&] { return runProgram(executable); });
@@ -381,11 +392,11 @@ TEST(ExecEnforcer, OverrideStackedBoundsTheActorPolicyWalk) {
   attach(
       "[roles.denied]\n[roles.override]\noverride-stacked = true\n"
       "[roles.top]\n" +
-      rule("denied", "/usr/lib64/*", false, false, true) +
+      rule("denied", sharedObjects(), false, false, true) +
       rule("denied", executable, false, false, false) +
-      rule("override", "/usr/lib64/*", false, false, true) +
+      rule("override", sharedObjects(), false, false, true) +
       rule("override", executable, true, false, false) +
-      rule("top", "/usr/lib64/*", false, false, true) +
+      rule("top", sharedObjects(), false, false, true) +
       rule("top", executable, false, false, false));
 
   Child allowed([&] { return runProgram(executable); });
