@@ -283,6 +283,7 @@ TEST_SRCS := \
 	tests/Enforce.cpp \
 	tests/EnrollGateTest.cpp \
 	tests/ExecEnforcerTest.cpp \
+	tests/FdTest.cpp \
 	tests/FsVerityFileTest.cpp \
 	tests/FsEnforcerTest.cpp \
 	tests/GlobMapTest.cpp \
