@@ -3,6 +3,7 @@
 #pragma once
 
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -39,8 +40,7 @@
 // either way every role the caller holds that writes `enroll` has to list the
 // new one.
 //
-// Header-only on purpose, so enrolling costs a caller no build edit: nothing
-// here reaches outside libc and the header-only bpfj/err.
+// Header-only apart from the generated protobuf schema and protobuf-lite.
 
 namespace bpfjailer::srv {
 
@@ -105,7 +105,7 @@ class ClientFd {
 
 /// @brief Enroll the calling process in a pod, returning the pod uuid.
 /// Blocking, and over in one round trip, bpfjsrv being socket activated.
-/// Every field has to be a bare scalar (see isBareScalar), and a variable name
+/// Every field has to be a protocol scalar, and a variable name
 /// has to be one the running jail's policy declares in `vars`, which attach
 /// publishes as an arena-backed allowlist -- see publishVarNames() in
 /// bpfj/enforce/PodVars.h.
@@ -149,9 +149,18 @@ class ClientFd {
   }
 
   std::array<char, kMaxMessageBytes> buf{};
-  const ssize_t got = ::recv(sock.get(), buf.data(), buf.size(), 0);
+  struct iovec iov{.iov_base = buf.data(), .iov_len = buf.size()};
+  struct msghdr msg{};
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  const ssize_t got = ::recvmsg(sock.get(), &msg, 0);
   if (got < 0) {
     return makeUnexpected(makeErrnoError("failed to read the enroll reply"));
+  }
+
+  if ((msg.msg_flags & MSG_TRUNC) != 0) {
+    return makeUnexpected(makeError(
+        std::errc::message_size, "bpfjsrv reply exceeds the size limit"));
   }
 
   if (got == 0) {
@@ -167,8 +176,8 @@ class ClientFd {
   }
 
   if (!reply->ok) {
-    return makeUnexpected(makeError(
-        std::errc::operation_not_permitted, "enroll refused: ", reply->error));
+    return makeUnexpected(
+        makeError(toErrc(reply->errorCode), "enroll refused: ", reply->error));
   }
 
   return reply->uuid;

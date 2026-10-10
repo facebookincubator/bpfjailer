@@ -16,7 +16,6 @@
 #include "bpfj/enforce/Pods.h"
 #include "bpfj/enforce/UnprivRoles.h"
 #include "bpfj/var/bpf/types_var.h"
-#include "toml/toml.hpp"
 
 namespace bpfjailer::srv {
 
@@ -25,62 +24,6 @@ namespace {
 static_assert(
     kMaxVars == BPFJ_OSS_VAR_MAX,
     "the protocol's variable ceiling has drifted from the pod's");
-
-[[nodiscard]] Expected<std::string> scalarField(
-    const toml::table& root,
-    std::string_view name) noexcept {
-  const auto value = root[name].value<std::string>();
-  if (!value) {
-    return makeUnexpected(
-        makeError(std::errc::invalid_argument, "missing '", name, "' field"));
-  }
-
-  return *value;
-}
-
-[[nodiscard]] Expected<std::vector<std::pair<std::string, std::string>>>
-varsField(const toml::table& root) noexcept {
-  std::vector<std::pair<std::string, std::string>> vars;
-
-  const toml::node* node = root.get(kVarsField);
-  if (node == nullptr) {
-    return vars;
-  }
-
-  const toml::array* entries = node->as_array();
-  if (entries == nullptr) {
-    return makeUnexpected(makeError(
-        std::errc::invalid_argument,
-        "'",
-        kVarsField,
-        "' must be a list of key/value pairs"));
-  }
-
-  for (const toml::node& entry : *entries) {
-    const toml::table* fields = entry.as_table();
-    if (fields == nullptr || fields->size() != 2) {
-      return makeUnexpected(makeError(
-          std::errc::invalid_argument,
-          "each entry of '",
-          kVarsField,
-          "' must contain only string 'name' and 'value' fields"));
-    }
-
-    const auto name = (*fields)["name"].value<std::string>();
-    const auto value = (*fields)["value"].value<std::string>();
-    if (!name || !value) {
-      return makeUnexpected(makeError(
-          std::errc::invalid_argument,
-          "each entry of '",
-          kVarsField,
-          "' must contain string 'name' and 'value' fields"));
-    }
-
-    vars.emplace_back(*name, *value);
-  }
-
-  return vars;
-}
 
 /// @brief Read one datagram, refusing a truncated one rather than acting on it.
 [[nodiscard]] Expected<std::string> readRequest(int connFd) noexcept {
@@ -122,6 +65,32 @@ varsField(const toml::table& root) noexcept {
   return unit;
 }
 
+[[nodiscard]] ResponseErrorCode responseCodeFor(const Error& error) noexcept {
+  if (error.code() == std::make_error_code(std::errc::permission_denied) ||
+      error.code() ==
+          std::make_error_code(std::errc::operation_not_permitted)) {
+    return ResponseErrorCode::PermissionDenied;
+  }
+  if (error.code() == std::make_error_code(std::errc::invalid_argument) ||
+      error.code() == std::make_error_code(std::errc::protocol_error) ||
+      error.code() == std::make_error_code(std::errc::message_size) ||
+      error.code() == std::make_error_code(std::errc::value_too_large)) {
+    return ResponseErrorCode::InvalidRequest;
+  }
+  return ResponseErrorCode::Internal;
+}
+
+[[nodiscard]] Expected<> writeErrorReply(
+    int connFd,
+    ResponseErrorCode code,
+    const Error& error) noexcept {
+  auto reply = encodeError(code, error.message());
+  if (!reply) {
+    return makeUnexpected(reply.error());
+  }
+  return writeReply(connFd, *reply);
+}
+
 /// @brief Enroll `peerPid` as `text` asks, without touching the connection.
 [[nodiscard]] Expected<bpfj_uuid> runRequest(
     std::string_view text,
@@ -151,46 +120,24 @@ varsField(const toml::table& root) noexcept {
 } // namespace
 
 Expected<EnrollRequest> decodeRequest(std::string_view text) noexcept {
-  try {
-    const toml::table root = toml::parse(text);
-
-    auto role = scalarField(root, kRoleField);
-    if (!role) {
-      return makeUnexpected(role.error());
-    }
-
-    auto podId = scalarField(root, kPodIdField);
-    if (!podId) {
-      return makeUnexpected(podId.error());
-    }
-
-    auto vars = varsField(root);
-    if (!vars) {
-      return makeUnexpected(vars.error());
-    }
-
-    EnrollRequest req{
-        .role = std::move(*role),
-        .podId = std::move(*podId),
-        .vars = std::move(*vars),
-    };
-
-    // Validated on the way in as well as out: a request that did not come from
-    // Client.h is exactly the one worth checking.
-    if (auto res = validateRequest(req); !res) {
-      return makeUnexpected(res.error());
-    }
-
-    return req;
-  } catch (const toml::parse_error& e) {
-    return makeUnexpected(
-        makeError(std::errc::invalid_argument, "malformed TOML: ", e.what()));
-  } catch (const std::exception& e) {
-    return makeUnexpected(makeError(
-        std::errc::invalid_argument,
-        "could not parse the request: ",
-        e.what()));
+  auto message = parseMessage<wire::EnrollRequest>(text);
+  if (!message) {
+    return makeUnexpected(message.error());
   }
+
+  EnrollRequest req{
+      .role = message->role(),
+      .podId = message->pod_id(),
+  };
+  req.vars.reserve(message->variables_size());
+  for (const auto& variable : message->variables()) {
+    req.vars.emplace_back(variable.name(), variable.value());
+  }
+
+  if (auto res = validateRequest(req); !res) {
+    return makeUnexpected(res.error());
+  }
+  return req;
 }
 
 Expected<> authorizeEnroll(
@@ -243,13 +190,15 @@ Expected<> serveConnection(
   if (!text) {
     // Nothing legible arrived, so the client is told only that, and the detail
     // goes to the journal through the return.
-    (void)writeReply(connFd, encodeError(text.error().message()));
+    (void)writeErrorReply(
+        connFd, ResponseErrorCode::InvalidRequest, text.error());
     return makeUnexpected(text.error());
   }
 
   auto uuid = runRequest(*text, peerPid, peerUid, cfg);
   if (!uuid) {
-    if (auto res = writeReply(connFd, encodeError(uuid.error().message()));
+    if (auto res = writeErrorReply(
+            connFd, responseCodeFor(uuid.error()), uuid.error());
         !res) {
       return makeUnexpected(res.error());
     }
@@ -257,7 +206,11 @@ Expected<> serveConnection(
     return makeUnexpected(uuid.error());
   }
 
-  return writeReply(connFd, encodeOk(uuidToString(*uuid)));
+  auto reply = encodeOk(uuidToString(*uuid));
+  if (!reply) {
+    return makeUnexpected(reply.error());
+  }
+  return writeReply(connFd, *reply);
 }
 
 } // namespace bpfjailer::srv

@@ -1,0 +1,41 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
+syntax = "proto3";
+
+package bpfjailer.srv.wire;
+
+option optimize_for = LITE_RUNTIME;
+
+message Variable {
+  string name = 1;
+  string value = 2;
+}
+
+message EnrollRequest {
+  string role = 1;
+  string pod_id = 2;
+  repeated Variable variables = 3;
+}
+
+message EnrollSuccess {
+  string uuid = 1;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNKNOWN = 0;
+  ERROR_CODE_INVALID_REQUEST = 1;
+  ERROR_CODE_PERMISSION_DENIED = 2;
+  ERROR_CODE_INTERNAL = 3;
+}
+
+message ErrorResponse {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+message EnrollResponse {
+  oneof result {
+    EnrollSuccess success = 1;
+    ErrorResponse error = 2;
+  }
+}

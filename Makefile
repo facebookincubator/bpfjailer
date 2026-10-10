@@ -17,9 +17,9 @@
 #   make config       print the resolved toolchain and flags
 #
 # Requires clang (BPF codegen), bpftool, a C++20 compiler, libbpf with its
-# headers, and a checkout of libarena. Set LIBBPF_CFLAGS / LIBBPF_LIBS to point
-# at a libbpf that pkg-config does not know about, and LIBARENA to the libarena
-# checkout (see below).
+# headers, protobuf-lite with protoc, and a checkout of libarena. Set
+# LIBBPF_CFLAGS / LIBBPF_LIBS to point at a libbpf that pkg-config does not
+# know about, and LIBARENA to the libarena checkout (see below).
 #
 # Everything is written under $(BUILD); the source tree is never touched.
 
@@ -40,6 +40,17 @@ LIBBPF_LIBS   ?= $(shell pkg-config --libs libbpf 2>/dev/null || echo -lbpf)
 # and its *_opts helpers. -isystem silences those without softening the
 # warnings that apply to this tree.
 LIBBPF_INCLUDES := $(patsubst -I%,-isystem %,$(LIBBPF_CFLAGS))
+
+# ---------------------------------------------------------------------------
+# protobuf
+# ---------------------------------------------------------------------------
+
+# Both are shipped by the standard Debian/Ubuntu, Fedora/RHEL and SUSE
+# repositories. protobuf-lite keeps the client and server runtime smaller than
+# the reflection-capable protobuf library.
+PROTOC              ?= protoc
+PROTOBUF_PKG_CONFIG ?= protobuf-lite
+PROTOBUF_CFLAGS     ?= $(shell pkg-config --cflags $(PROTOBUF_PKG_CONFIG) 2>/dev/null)
 
 # ---------------------------------------------------------------------------
 # libarena
@@ -65,10 +76,11 @@ LIBARENA_INCLUDE := $(LIBARENA)/libarena/include
 # every library it loads alongside it.
 #
 # This needs the static archives, which most distributions package apart from
-# the shared ones: libbpf-static, elfutils-libelf-devel-static, zlib-static,
-# libzstd-static, libstdc++-static, glibc-static. Version skew between
-# libbpf.a and the libbpf headers is silent and does not survive to a link
-# error, so install the static archive from the same libbpf as the -devel.
+# the shared ones: libbpf-static, protobuf-lite's static archive,
+# elfutils-libelf-devel-static, zlib-static, libzstd-static, libstdc++-static,
+# and glibc-static. Version skew between libbpf.a and the libbpf headers is
+# silent and does not survive to a link error, so install the static archive
+# from the same libbpf as the -devel.
 #
 # Asking pkg-config for the closure beats naming libelf/zlib/zstd here: which
 # of them libbpf actually pulls in depends on how it was configured.
@@ -82,6 +94,7 @@ ifeq ($(STATIC),1)
 # those, so the usual objection to -static does not apply to it.
 STATICFLAGS := -static
 STATICLIBS  := $(LIBBPF_STATIC_LIBS)
+PROTOBUF_LIBS ?= $(shell pkg-config --static --libs $(PROTOBUF_PKG_CONFIG) 2>/dev/null)
 
 # gcc rejects -static -fsanitize=address outright, and the other runtimes are
 # not shipped as archives either. Say so here rather than let it surface as a
@@ -92,6 +105,7 @@ endif
 
 else
 STATICLIBS := $(LIBBPF_LIBS)
+PROTOBUF_LIBS ?= $(shell pkg-config --libs $(PROTOBUF_PKG_CONFIG) 2>/dev/null)
 endif
 
 # ---------------------------------------------------------------------------
@@ -126,7 +140,7 @@ endif
 # -I. so sources resolve "bpfj/..." and "ctl/..." against the repo root, and
 # -I$(BUILD) so they resolve the generated skeleton at the same path the Buck
 # build stages it under.
-INCLUDES := -I. -I$(BUILD) $(LIBBPF_INCLUDES)
+INCLUDES := -I. -I$(BUILD) $(LIBBPF_INCLUDES) $(PROTOBUF_CFLAGS)
 
 CXXFLAGS ?= $(CXXSTD) $(OPTFLAGS) $(WARNFLAGS) $(SANFLAGS)
 LDFLAGS  ?= $(STATICFLAGS) $(SANFLAGS)
@@ -264,10 +278,13 @@ SRV_SRCS := \
 	srv/Server.cpp \
 	srv/Main.cpp
 
+PROTO_SRC := srv/Protocol.proto
+PROTO_CPP := $(BUILD)/srv/Protocol.pb.cc
+PROTO_H   := $(BUILD)/srv/Protocol.pb.h
+
 LOG_SRCS := log/Main.cpp
 
-# bpfjclient is the one binary here that links nothing else: srv/Client.h is
-# header-only, which is the whole point of it.
+# bpfjclient has no BPF dependency; its only runtime library is protobuf-lite.
 CLIENT_SRCS := client/Main.cpp
 
 # A third entry point, on the same footing as the two above: the harness
@@ -322,10 +339,11 @@ SRV_OBJS    := $(SRV_SRCS:%.cpp=$(BUILD)/%.o)
 LOG_OBJS    := $(LOG_SRCS:%.cpp=$(BUILD)/%.o)
 CLIENT_OBJS := $(CLIENT_SRCS:%.cpp=$(BUILD)/%.o)
 TEST_OBJS   := $(TEST_SRCS:%.cpp=$(BUILD)/%.o)
+PROTO_OBJ   := $(PROTO_CPP:.cc=.o)
 
 OBJS := $(COMMON_OBJS) $(CTL_OBJS) $(CMD_OBJS) $(SRV_OBJS) $(LOG_OBJS) $(CLIENT_OBJS) \
 	$(TEST_OBJS)
-DEPS := $(OBJS:.o=.d)
+DEPS := $(OBJS:.o=.d) $(PROTO_OBJ:.o=.d)
 
 BIN     := $(BUILD)/bpfjctl
 CMD_BIN := $(BUILD)/bpfjcmd
@@ -552,7 +570,7 @@ endef
 
 # cmd and srv name directories as well as targets, so without .PHONY make would
 # find those directories up to date and build nothing.
-.PHONY: all clean config signed signing-key client cmd srv log test libarena-check FORCE
+.PHONY: all clean config signed signing-key client cmd srv log test libarena-check protobuf-check FORCE
 all: $(BIN)
 
 FORCE:
@@ -601,12 +619,35 @@ $(BUILD)/%.skel.h: $(BUILD)/%.bpf.o
 	@mkdir -p $(dir $@)
 	$(BPFTOOL) gen skeleton $< > $@
 
+protobuf-check:
+	@if ! command -v $(PROTOC) >/dev/null 2>&1; then \
+		echo "protoc not found; install protobuf-compiler from your distribution" >&2; \
+		exit 1; \
+	fi
+	@if [ -n "$(PROTOBUF_PKG_CONFIG)" ] && \
+	   ! pkg-config --exists "$(PROTOBUF_PKG_CONFIG)"; then \
+		echo "protobuf-lite development files not found by pkg-config" >&2; \
+		echo "install libprotobuf-dev (Debian/Ubuntu) or protobuf-lite-devel (Fedora/RHEL/SUSE)" >&2; \
+		exit 1; \
+	fi
+
+$(PROTO_H): $(PROTO_SRC) | protobuf-check
+	@mkdir -p $(dir $@)
+	$(PROTOC) --proto_path=. --cpp_out=$(BUILD) $<
+
+$(PROTO_CPP): $(PROTO_H)
+
+$(PROTO_OBJ): $(PROTO_CPP)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
+
 # Every object waits on every skeleton: Jailer.cpp includes them, and the
 # others reach them through Jailer.h's translation units often enough that
 # ordering it once here is simpler than tracking which do.
 $(BUILD)/%.o: %.cpp $(SKELS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
+
+$(BUILD)/srv/Server.o $(BUILD)/srv/Main.o $(BUILD)/tests/ProtocolTest.o: $(PROTO_H)
 
 $(BUILD)/tests/GlobMapTest.o: $(TEST_SKELS)
 $(BUILD)/tests/MountSnapshotTest.o: $(TEST_SKELS)
@@ -678,28 +719,28 @@ $(BIN): $(COMMON_OBJS) $(CTL_OBJS) $(LINKMODE)
 $(CMD_BIN): $(COMMON_OBJS) $(CMD_OBJS) $(LINKMODE)
 	$(CXX) $(LDFLAGS) $(COMMON_OBJS) $(CMD_OBJS) $(LDLIBS) -o $@
 
-$(SRV_BIN): $(COMMON_OBJS) $(SRV_OBJS) $(LINKMODE)
-	$(CXX) $(LDFLAGS) $(COMMON_OBJS) $(SRV_OBJS) $(LDLIBS) -o $@
+$(SRV_BIN): $(COMMON_OBJS) $(SRV_OBJS) $(PROTO_OBJ) $(LINKMODE) | protobuf-check
+	$(CXX) $(LDFLAGS) $(COMMON_OBJS) $(SRV_OBJS) $(PROTO_OBJ) $(LDLIBS) $(PROTOBUF_LIBS) -o $@
 
 $(LOG_BIN): $(COMMON_OBJS) $(LOG_OBJS) $(LINKMODE)
 	$(CXX) $(LDFLAGS) $(COMMON_OBJS) $(LOG_OBJS) $(LDLIBS) -o $@
 
 # Spelled out rather than left to the pattern rule above, which waits on every
 # BPF skeleton: a caller of srv/Client.h should not need clang or bpftool.
-$(BUILD)/client/%.o: client/%.cpp
+$(BUILD)/client/%.o: client/%.cpp $(PROTO_H)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
 
-# No COMMON_OBJS and no LDLIBS for the same reason: libc is the whole of it.
-$(CLIENT_BIN): $(CLIENT_OBJS) $(LINKMODE)
-	$(CXX) $(LDFLAGS) $(CLIENT_OBJS) -o $@
+# No COMMON_OBJS or BPF dependencies; only the protobuf-lite wire runtime.
+$(CLIENT_BIN): $(CLIENT_OBJS) $(PROTO_OBJ) $(LINKMODE) | protobuf-check
+	$(CXX) $(LDFLAGS) $(CLIENT_OBJS) $(PROTO_OBJ) $(PROTOBUF_LIBS) -o $@
 
 client: $(CLIENT_BIN)
 
 log: $(LOG_BIN)
 
-$(TEST_BIN): $(COMMON_OBJS) $(TEST_OBJS) $(LINKMODE)
-	$(CXX) $(LDFLAGS) $(COMMON_OBJS) $(TEST_OBJS) $(LDLIBS) -o $@
+$(TEST_BIN): $(COMMON_OBJS) $(TEST_OBJS) $(PROTO_OBJ) $(LINKMODE) | protobuf-check
+	$(CXX) $(LDFLAGS) $(COMMON_OBJS) $(TEST_OBJS) $(PROTO_OBJ) $(LDLIBS) $(PROTOBUF_LIBS) -o $@
 
 # Running the tests needs root -- each one unshares a mount namespace and
 # mounts a bpffs. Building them does not, and `sudo make test` would leave
@@ -808,6 +849,8 @@ config:
 	@echo "CXX         = $(CXX)"
 	@echo "CLANG       = $(CLANG)"
 	@echo "BPFTOOL     = $(BPFTOOL)"
+	@echo "PROTOC      = $(PROTOC)"
+	@echo "PROTOBUF    = $(PROTOBUF_PKG_CONFIG)"
 	@echo "LIBARENA    = $(if $(LIBARENA),$(LIBARENA),(unset))"
 	@echo "BUILD       = $(BUILD)"
 	@echo "BPF_ARCH    = $(BPF_ARCH)"
