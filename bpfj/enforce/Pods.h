@@ -40,7 +40,7 @@ enum class Threads {
   All,
 };
 
-/// @brief Put `pid` in a new pod named by `roleId` and `userId`, through the
+/// @brief Put `pid` in a new pod named by `roleId` and `podId`, through the
 /// pinned maps rather than loading anything. `roleId` must exist in the
 /// running policy, and each of the at most BPFJ_OSS_VAR_MAX `vars` must be one
 /// that policy declares; attach publishes both lookups in the arena.
@@ -48,7 +48,7 @@ enum class Threads {
 [[nodiscard]] Expected<bpfj_uuid> enrollPod(
     const PinConfig& cfg,
     std::string_view roleId,
-    std::string_view userId,
+    std::string_view podId,
     std::span<const PodVar> vars,
     pid_t pid,
     Threads threads) noexcept;

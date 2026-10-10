@@ -175,7 +175,7 @@ struct SnapshotVar {
 
 struct SnapshotPod {
   struct bpfj_replace_pod_snapshot header{};
-  struct bpfj_user_id user{};
+  struct bpfj_pod_id pod_id{};
   std::vector<SnapshotVar> vars;
 };
 
@@ -183,7 +183,7 @@ struct SnapshotPod {
     const SnapshotPod& lhs,
     const SnapshotPod& rhs) noexcept {
   if (std::memcmp(&lhs.header, &rhs.header, sizeof(lhs.header)) != 0 ||
-      std::memcmp(&lhs.user, &rhs.user, sizeof(lhs.user)) != 0 ||
+      std::memcmp(&lhs.pod_id, &rhs.pod_id, sizeof(lhs.pod_id)) != 0 ||
       lhs.vars.size() != rhs.vars.size()) {
     return false;
   }
@@ -222,7 +222,7 @@ template <typename T>
         pod.header.magic != BPFJ_REPLACE_SNAPSHOT_MAGIC ||
         pod.header.version != BPFJ_REPLACE_SNAPSHOT_VERSION ||
         pod.header.old_pod == 0 || pod.header.var_count > BPFJ_OSS_VAR_MAX ||
-        !readSnapshotField(bytes, at, pod.user)) {
+        !readSnapshotField(bytes, at, pod.pod_id)) {
       return makeUnexpected(makeError(
           std::errc::state_not_recoverable,
           "replace iterator emitted an invalid pod snapshot"));
@@ -230,7 +230,7 @@ template <typename T>
     if (std::memchr(
             pod.header.role_id.id, '\0', sizeof(pod.header.role_id.id)) ==
             nullptr ||
-        std::memchr(pod.user.id, '\0', sizeof(pod.user.id)) == nullptr) {
+        std::memchr(pod.pod_id.id, '\0', sizeof(pod.pod_id.id)) == nullptr) {
       return makeUnexpected(makeError(
           std::errc::state_not_recoverable,
           "replace iterator emitted an unterminated pod identity"));
@@ -335,7 +335,7 @@ template <typename T>
   auto* dst = static_cast<struct bpfj_pod*>(*blob);
   *dst = {};
   dst->role_id = src.header.role_id;
-  dst->user_id = src.user;
+  dst->pod_id = src.pod_id;
   dst->uuid = src.header.uuid;
   dst->creation_time_ns = src.header.creation_time_ns;
   dst->gc_removal_attempts = src.header.gc_removal_attempts;

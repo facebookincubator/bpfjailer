@@ -16,7 +16,7 @@ using bpfjailer::srv::EnrollRequest;
 TEST(Protocol, RequestIsToml) {
   const EnrollRequest request{
       .role = "worker",
-      .userId = "alice@example",
+      .podId = "alice@example",
       .vars = {{"vm_uuid", "550e8400-e29b-41d4-a716-446655440000"}},
   };
 
@@ -26,19 +26,24 @@ TEST(Protocol, RequestIsToml) {
       *encoded,
       std::string(
           "role = \"worker\"\n"
-          "user-id = \"alice@example\"\n"
+          "pod-id = \"alice@example\"\n"
           "vars = [{ name = \"vm_uuid\", value = "
           "\"550e8400-e29b-41d4-a716-446655440000\" }]\n"));
 
   auto decoded = decodeRequest(*encoded);
   ASSERT_OK(decoded);
   ASSERT_EQ(decoded->role, request.role);
-  ASSERT_EQ(decoded->userId, request.userId);
+  ASSERT_EQ(decoded->podId, request.podId);
   ASSERT(decoded->vars == request.vars);
 }
 
 TEST(Protocol, RejectsLegacyColonSyntax) {
-  auto decoded = decodeRequest("role: worker\nuser-id: alice\n");
+  auto decoded = decodeRequest("role: worker\npod-id: alice\n");
+  ASSERT(!decoded);
+}
+
+TEST(Protocol, RejectsLegacyUserIdField) {
+  auto decoded = decodeRequest("role = \"worker\"\nuser-id = \"alice\"\n");
   ASSERT(!decoded);
 }
 

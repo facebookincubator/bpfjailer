@@ -284,7 +284,7 @@ setId(char (&dst)[N], std::string_view src, std::string_view what) noexcept {
     PodArena& arena,
     const struct bpfj_role_policy* rolePolicy,
     std::string_view roleId,
-    std::string_view userId,
+    std::string_view podId,
     std::span<const ResolvedPodVar> vars,
     unsigned char source) noexcept {
   auto blob = arena.alloc(podAllocSize(vars));
@@ -300,7 +300,7 @@ setId(char (&dst)[N], std::string_view src, std::string_view what) noexcept {
   }
   pod->policy = rolePolicy;
 
-  if (auto res = setId(pod->user_id.id, userId, "user id"); !res) {
+  if (auto res = setId(pod->pod_id.id, podId, "pod id"); !res) {
     (void)arena.free(*blob);
     return makeUnexpected(res.error());
   }
@@ -404,7 +404,7 @@ Expected<bpfj_uuid> makeUuid4() noexcept {
 Expected<bpfj_uuid> enrollPod(
     const PinConfig& cfg,
     std::string_view roleId,
-    std::string_view userId,
+    std::string_view podId,
     std::span<const PodVar> vars,
     pid_t pid,
     Threads threads) noexcept {
@@ -487,7 +487,7 @@ Expected<bpfj_uuid> enrollPod(
       arena,
       *rolePolicy,
       roleId,
-      userId,
+      podId,
       resolved,
       static_cast<unsigned char>(BPFJ_ENROLL_CLIENT));
   if (!pod) {

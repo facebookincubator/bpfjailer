@@ -104,8 +104,8 @@ only opt into `-j N` or `BPFJTEST_JOBS=N` inside a disposable VM.
 sudo bpfjctl check  policy.toml          # parse a policy and report what it holds
 sudo bpfjctl attach policy.toml          # load and pin the jailer
 sudo bpfjctl replace policy.toml         # reload without releasing jailed tasks
-sudo bpfjctl wrap ROLE USER_ID -- CMD    # run CMD in a new pod
-sudo bpfjctl enroll ROLE USER_ID PID [NAME=VALUE...] # enroll with variables
+sudo bpfjctl wrap ROLE POD_ID -- CMD    # run CMD in a new pod
+sudo bpfjctl enroll ROLE POD_ID PID [NAME=VALUE...] # enroll with variables
 sudo bpfjctl show PID                    # pods a process is in
 sudo bpfjctl list                        # every pod and its processes
 sudo bpfjctl detach                      # unpin and unload

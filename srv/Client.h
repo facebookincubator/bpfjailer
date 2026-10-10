@@ -21,7 +21,7 @@
 //
 //   bpfjailer::srv::EnrollRequest req{
 //       .role = "worker",
-//       .userId = "alice",
+//       .podId = "alice",
 //       .vars = {{"vm_uuid", "550e8400-e29b-41d4-a716-446655440000"}},
 //   };
 //

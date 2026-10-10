@@ -121,8 +121,8 @@ std::string formatBpfEvent(const struct bpfj_event& entry) {
   line += std::to_string(entry.timestamp_ns);
   line += " role=";
   line += boundedString(entry.pod.role_id.id, sizeof(entry.pod.role_id.id));
-  line += " user=";
-  line += boundedString(entry.pod.user_id.id, sizeof(entry.pod.user_id.id));
+  line += " pod_id=";
+  line += boundedString(entry.pod.pod_id.id, sizeof(entry.pod.pod_id.id));
   line += " uuid=";
   line += uuid;
   line += " refs=";

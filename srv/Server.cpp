@@ -145,7 +145,7 @@ varsField(const toml::table& root) noexcept {
 
   // Threads::All, the peer being a running process that could have been
   // multithreaded long before it connected.
-  return enrollPod(cfg, req->role, req->userId, vars, peerPid, Threads::All);
+  return enrollPod(cfg, req->role, req->podId, vars, peerPid, Threads::All);
 }
 
 } // namespace
@@ -159,9 +159,9 @@ Expected<EnrollRequest> decodeRequest(std::string_view text) noexcept {
       return makeUnexpected(role.error());
     }
 
-    auto userId = scalarField(root, kUserIdField);
-    if (!userId) {
-      return makeUnexpected(userId.error());
+    auto podId = scalarField(root, kPodIdField);
+    if (!podId) {
+      return makeUnexpected(podId.error());
     }
 
     auto vars = varsField(root);
@@ -171,7 +171,7 @@ Expected<EnrollRequest> decodeRequest(std::string_view text) noexcept {
 
     EnrollRequest req{
         .role = std::move(*role),
-        .userId = std::move(*userId),
+        .podId = std::move(*podId),
         .vars = std::move(*vars),
     };
 

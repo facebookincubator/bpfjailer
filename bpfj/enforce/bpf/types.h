@@ -19,16 +19,17 @@
 // variables live in the shared arena and the pod carries only arena pointers.
 
 // Sized for long service/tenant identity strings (255 chars plus NUL). Never
-// put a bpfj_user_id on the BPF stack -- even at 64 bytes it pushed the
+// put a bpfj_pod_id on the BPF stack -- even at 64 bytes it pushed the
 // internal scan chain past the 512-byte budget.
-#define POD_USER_ID_LEN 256
+#define POD_ID_LEN 256
 
 // Versioning
-#define BPFJ_PID_DATA_VERSION 3
+#define BPFJ_PID_DATA_VERSION 4
 
 // The persisted task-storage and arena-pod layouts replaced as one unit.
-// Bump this whenever either bpfj_pid_data or bpfj_pod changes shape.
-#define BPFJ_MEMBERSHIP_VERSION 2
+// Bump this whenever either bpfj_pid_data or bpfj_pod changes shape or
+// meaning.
+#define BPFJ_MEMBERSHIP_VERSION 3
 
 // The layout of the bpfj_bpf_owner records below, which a replace reads
 // through the running tree's pin to decide whether it can carry them across;
@@ -193,14 +194,14 @@ struct bpfj_role_policy_ref {
   const struct bpfj_role_policy __arena* policy;
 };
 
-struct bpfj_user_id {
-  // null terminated. String user id.
-  char id[POD_USER_ID_LEN];
+struct bpfj_pod_id {
+  // null terminated. String pod id.
+  char id[POD_ID_LEN];
 };
 
 struct bpfj_pod {
   struct bpfj_role_id role_id;
-  struct bpfj_user_id user_id;
+  struct bpfj_pod_id pod_id;
   struct bpfj_uuid uuid;
   struct bpfj_var_array var_array;
 
@@ -348,10 +349,10 @@ struct bpfj_pid_data {
 };
 
 // Binary records emitted by the replace discovery iterator. The fixed header
-// is followed by one bpfj_user_id and then var_count pairs of
+// is followed by one bpfj_pod_id and then var_count pairs of
 // bpfj_replace_var_snapshot plus that variable's payload bytes.
 #define BPFJ_REPLACE_SNAPSHOT_MAGIC 0x42504a52U
-#define BPFJ_REPLACE_SNAPSHOT_VERSION 1U
+#define BPFJ_REPLACE_SNAPSHOT_VERSION 2U
 
 struct bpfj_replace_pod_snapshot {
   __u32 magic;

@@ -132,7 +132,7 @@ outside.
 ## The pieces
 
 `bpfjclient`, built from `client/Main.cpp`, is the unprivileged counterpart to
-`bpfjctl wrap`: the same `ROLE USER_ID -- COMMAND`
+`bpfjctl wrap`: the same `ROLE POD_ID -- COMMAND`
 shape, except it enrolls over the socket instead of writing the maps, then
 execs. Jail membership survives exec, so the command inherits the pod.
 Pass `-V NAME=VALUE` repeatedly to set up to 16 variables declared by the

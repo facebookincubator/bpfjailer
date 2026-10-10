@@ -38,7 +38,7 @@ constexpr char kDoc[] =
     "\n"
     "ROLE has to carry `unpriv-enroll: true` in the running jailer's policy "
     "unless this is run as root; anything else is refused.";
-constexpr char kArgsDoc[] = "ROLE USER_ID -- COMMAND [ARGS...]";
+constexpr char kArgsDoc[] = "ROLE POD_ID -- COMMAND [ARGS...]";
 
 const struct argp_option kOptions[] = {
     {"socket",
@@ -77,7 +77,7 @@ error_t parseOpt(int key, char* arg, struct argp_state* state) {
       if (state->arg_num == 0) {
         args->req.role = arg;
       } else if (state->arg_num == 1) {
-        args->req.userId = arg;
+        args->req.podId = arg;
       } else {
         // Consuming the rest of the line stops argp reading the command's own
         // flags as bpfjclient's.

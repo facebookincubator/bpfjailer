@@ -110,7 +110,7 @@ bpfj_replace_seq_write(struct seq_file* seq, const void* data, __u32 size) {
 }
 
 struct bpfj_replace_snapshot_scratch {
-  struct bpfj_user_id user_id;
+  struct bpfj_pod_id pod_id;
   unsigned char value[BPFJ_OSS_VAR_VAL_LEN];
 };
 
@@ -265,12 +265,12 @@ int bpfj_replace_snapshot(struct bpf_iter__task* ctx) {
         &snapshot.role_id, &pod->role_id, sizeof(snapshot.role_id));
     __builtin_memcpy(&snapshot.uuid, &pod->uuid, sizeof(snapshot.uuid));
     __builtin_memcpy(
-        &snapshot_scratch->user_id, &pod->user_id, sizeof(pod->user_id));
+        &snapshot_scratch->pod_id, &pod->pod_id, sizeof(pod->pod_id));
 
     struct seq_file* seq = ctx->meta->seq;
     if (!bpfj_replace_seq_write(seq, &snapshot, sizeof(snapshot)) ||
         !bpfj_replace_seq_write(
-            seq, &snapshot_scratch->user_id, sizeof(pod->user_id))) {
+            seq, &snapshot_scratch->pod_id, sizeof(pod->pod_id))) {
       return 0;
     }
 

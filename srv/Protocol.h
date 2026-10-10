@@ -16,7 +16,7 @@
 // datagram, so neither side has to frame or to read to EOF.
 //
 //   role = "worker"
-//   user-id = "alice"
+//   pod-id = "alice"
 //   vars = [{ name = "vm_uuid", value = "550e8400-e29b-41d4-a716-446655440000"
 //   }]
 //
@@ -40,7 +40,7 @@ namespace bpfjailer::srv {
 /// the role's `unpriv-enroll` policy decide what it may ask for.
 inline constexpr std::string_view kDefaultSocketPath = "@bpfj";
 
-// A request is a role, a user id and at most sixteen short variables, so
+// A request is a role, a pod id and at most sixteen short variables, so
 // anything approaching this is not a request this protocol can express.
 inline constexpr std::size_t kMaxMessageBytes = 4096;
 
@@ -49,7 +49,7 @@ inline constexpr std::size_t kMaxMessageBytes = 4096;
 inline constexpr std::size_t kMaxVars = 16;
 
 inline constexpr std::string_view kRoleField = "role";
-inline constexpr std::string_view kUserIdField = "user-id";
+inline constexpr std::string_view kPodIdField = "pod-id";
 inline constexpr std::string_view kVarsField = "vars";
 inline constexpr std::string_view kOkField = "ok";
 inline constexpr std::string_view kUuidField = "uuid";
@@ -57,7 +57,7 @@ inline constexpr std::string_view kErrorField = "error";
 
 struct EnrollRequest {
   std::string role;
-  std::string userId;
+  std::string podId;
   std::vector<std::pair<std::string, std::string>> vars;
 };
 
@@ -96,11 +96,11 @@ struct EnrollResponse {
         "'"));
   }
 
-  if (!isProtocolScalar(req.userId)) {
+  if (!isProtocolScalar(req.podId)) {
     return makeUnexpected(makeError(
         std::errc::invalid_argument,
-        "user-id must be a non-empty protocol scalar, got '",
-        req.userId,
+        "pod-id must be a non-empty protocol scalar, got '",
+        req.podId,
         "'"));
   }
 
@@ -191,9 +191,9 @@ struct EnrollResponse {
 
   std::string out;
   out.append(kRoleField).append(" = ").append(quoteToml(req.role)).append("\n");
-  out.append(kUserIdField)
+  out.append(kPodIdField)
       .append(" = ")
-      .append(quoteToml(req.userId))
+      .append(quoteToml(req.podId))
       .append("\n");
   if (!req.vars.empty()) {
     out.append(kVarsField).append(" = [");

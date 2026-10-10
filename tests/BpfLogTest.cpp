@@ -222,7 +222,7 @@ TEST(BpfLog, RejectsShortRecords) {
 TEST(BpfLog, FormatsStructuredEvents) {
   struct bpfj_event entry{};
   copyString(entry.pod.role_id.id, sizeof(entry.pod.role_id.id), "web");
-  copyString(entry.pod.user_id.id, sizeof(entry.pod.user_id.id), "owner@meta");
+  copyString(entry.pod.pod_id.id, sizeof(entry.pod.pod_id.id), "owner@meta");
   entry.pod.uuid.uuid[0] = 0x12;
   entry.pod.uuid.uuid[1] = 0x34;
   entry.pod.uuid.uuid[2] = 0x56;
@@ -249,7 +249,7 @@ TEST(BpfLog, FormatsStructuredEvents) {
   entry.timestamp_ns = 102;
 
   const std::string expected =
-      "event type=ptrace pid=100 tid=101 ts_ns=102 role=web user=owner@meta "
+      "event type=ptrace pid=100 tid=101 ts_ns=102 role=web pod_id=owner@meta "
       "uuid=12345678-9abc-def0-1122-334455667788 refs=2 creation_ns=42 "
       "gc_attempts=3 enrollment_source=6";
   ASSERT_EQ(bpfjailer::log::formatBpfEvent(entry), expected);

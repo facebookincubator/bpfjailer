@@ -32,7 +32,7 @@ struct WrapArgs {
   PinConfig pin;
   PrivilegeDrop drop;
   const char* role = nullptr;
-  const char* userId = nullptr;
+  const char* podId = nullptr;
   char** command = nullptr;
 };
 
@@ -55,7 +55,7 @@ constexpr char kDoc[] =
     "leaves the command in group 0. Changing uid away from root clears the "
     "capability sets but not the bounding set, so an exec can still regain "
     "them; only --drop-cap closes that.";
-constexpr char kArgsDoc[] = "ROLE USER_ID -- COMMAND [ARGS...]";
+constexpr char kArgsDoc[] = "ROLE POD_ID -- COMMAND [ARGS...]";
 
 const struct argp_option kOptions[] = {
     {"drop-cap",
@@ -122,7 +122,7 @@ error_t parseOpt(int key, char* arg, struct argp_state* state) {
       if (state->arg_num == 0) {
         args->role = arg;
       } else if (state->arg_num == 1) {
-        args->userId = arg;
+        args->podId = arg;
       } else {
         // Everything from here belongs to COMMAND; consuming the rest of the
         // line stops argp reading its flags as bpfjctl's.
@@ -152,7 +152,7 @@ int wrapRun(int argc, char** argv) {
   // the drop below gives away. LeaderOnly, since the exec destroys every other
   // thread and the leader's is the only entry that outlives this call.
   auto uuid = enrollPod(
-      args.pin, args.role, args.userId, {}, ::getpid(), Threads::LeaderOnly);
+      args.pin, args.role, args.podId, {}, ::getpid(), Threads::LeaderOnly);
   if (!uuid) {
     std::cerr << "wrap failed: " << uuid.error() << std::endl;
     return 1;

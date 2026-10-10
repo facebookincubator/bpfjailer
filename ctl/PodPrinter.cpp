@@ -86,7 +86,7 @@ void printPod(
     const void* arenaBase) {
   os << "  pod " << uuidToString(pod.uuid) << "\n"
      << "    role:    " << boundedId(pod.role_id.id, ROLE_ID_LEN) << "\n"
-     << "    user id: " << boundedId(pod.user_id.id, POD_USER_ID_LEN) << "\n"
+     << "    pod id: " << boundedId(pod.pod_id.id, POD_ID_LEN) << "\n"
      << "    source:  " << enrollmentSourceName(pod.enrollment_source) << "\n"
      << "    refs:    " << pod.refs << "\n"
      << "    age:     " << (nowNs - pod.creation_time_ns) / 1'000'000'000
