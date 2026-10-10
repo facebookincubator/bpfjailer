@@ -101,9 +101,6 @@ static __always_inline void bpfj_pod_refs_dec(struct bpfj_pod __arena* pod) {
   // pod->refs would let two concurrent putters both decide they were last.
   if (__sync_fetch_and_sub(&pod->refs, 1) <= 1) {
     if (bpfj_heap_enabled) {
-      bpfj_heap_use_arena();
-      // Prelocking makes bpfj_heap_free's nested trylock fail and leaks the
-      // pod.
       BPFJ_HEAP_FREE(pod);
     }
   }

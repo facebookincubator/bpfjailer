@@ -14,6 +14,8 @@
 
 namespace bpfjailer {
 
+inline constexpr std::string_view kHeapSyscallProgram = "bpfj_heap_syscall";
+
 /// @brief Where the jailer's programs and maps are pinned: `bpffsPath` names
 /// the bpffs mount and `pinDir` a directory beneath it, together one
 /// self-contained tree that can be torn down without a manifest.
@@ -33,6 +35,11 @@ struct PinConfig {
 
   /// @brief Where attached links are pinned, one per program.
   [[nodiscard]] std::filesystem::path linkDir() const noexcept;
+
+  /// @brief Where callable, unattached programs are pinned.
+  [[nodiscard]] std::filesystem::path programDir() const noexcept;
+
+  [[nodiscard]] std::string programPath(std::string_view name) const noexcept;
 };
 
 /// @brief The pin tree operations the jailer and its enforcers share. Every
@@ -56,6 +63,11 @@ namespace pins {
     struct bpf_link* link,
     std::string_view name,
     const std::filesystem::path& dir) noexcept;
+
+[[nodiscard]] Expected<> pinProgram(
+    struct bpf_program* program,
+    const PinConfig& cfg,
+    std::string_view name) noexcept;
 
 /// @brief Point `skel`'s map `name` at `mapDir/name`, resizing it first. Must
 /// run before load(), since libbpf creates the pin as part of map creation and
@@ -86,6 +98,10 @@ namespace pins {
 /// running jail for a process that did not load it. Fails when nothing is
 /// pinned there, which is what a command run against no jailer sees.
 [[nodiscard]] Expected<Fd> openPinnedMap(
+    const PinConfig& cfg,
+    std::string_view name) noexcept;
+
+[[nodiscard]] Expected<Fd> openPinnedProgram(
     const PinConfig& cfg,
     std::string_view name) noexcept;
 

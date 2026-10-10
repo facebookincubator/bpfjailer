@@ -338,6 +338,7 @@ PodArena::~PodArena() noexcept {
 
 PodArena::PodArena(PodArena&& other) noexcept
     : owner_{std::move(other.owner_)},
+      heapSyscall_{std::move(other.heapSyscall_)},
       base_{other.base_},
       mapExtra_{other.mapExtra_} {
   other.base_ = nullptr;
@@ -348,6 +349,7 @@ PodArena& PodArena::operator=(PodArena&& other) noexcept {
   if (this != &other) {
     reset();
     owner_ = std::move(other.owner_);
+    heapSyscall_ = std::move(other.heapSyscall_);
     base_ = other.base_;
     mapExtra_ = other.mapExtra_;
     other.base_ = nullptr;
@@ -364,6 +366,10 @@ Expected<PodArena> PodArena::open(const PinConfig& cfg) noexcept {
   auto fd = pins::openPinnedMap(cfg, kArenaMap);
   if (!fd) {
     return makeUnexpected(fd.error());
+  }
+  auto heapSyscall = pins::openPinnedProgram(cfg, kHeapSyscallProgram);
+  if (!heapSyscall) {
+    return makeUnexpected(heapSyscall.error());
   }
 
   auto extra = arena::pinnedMapExtra(*fd);
@@ -405,13 +411,14 @@ Expected<PodArena> PodArena::open(const PinConfig& cfg) noexcept {
           (void)arena::restorePlaceholder(extra);
         }
       });
+  arena.heapSyscall_ = std::move(*heapSyscall);
   arena.base_ = reinterpret_cast<void*>(*extra);
   arena.mapExtra_ = *extra;
   return arena;
 }
 
 Expected<void*> PodArena::alloc(std::uint32_t size) noexcept {
-  const long offset = heap::alloc(base_, size);
+  const long offset = heap::allocOffset(heapSyscall_.get(), base_, size);
   if (offset <= BPFJ_HEAP_NULL) {
     return makeUnexpected(
         makeError(std::errc::not_enough_memory, "failed to allocate pod vars"));
@@ -426,7 +433,8 @@ Expected<void*> PodArena::alloc(std::uint32_t size) noexcept {
 }
 
 Expected<> PodArena::free(void* ptr) noexcept {
-  const long res = heap::free(base_, ptr);
+  const long res =
+      heap::freeOffset(heapSyscall_.get(), heap::ptrToOffset(base_, ptr));
   if (res != 0) {
     return makeUnexpected(
         makeError(std::errc(-res), "failed to free pod vars from arena"));
@@ -436,6 +444,7 @@ Expected<> PodArena::free(void* ptr) noexcept {
 
 void PodArena::reset() noexcept {
   owner_.reset();
+  heapSyscall_ = Fd{};
   base_ = nullptr;
   mapExtra_ = 0;
 }

@@ -70,6 +70,14 @@ fs::path PinConfig::linkDir() const noexcept {
   return fs::path(root()) / "links";
 }
 
+fs::path PinConfig::programDir() const noexcept {
+  return fs::path(root()) / "programs";
+}
+
+std::string PinConfig::programPath(std::string_view name) const noexcept {
+  return (programDir() / name).string();
+}
+
 namespace pins {
 
 Expected<> checkBpffs(const std::string& path) noexcept {
@@ -91,7 +99,8 @@ Expected<> makeTree(const PinConfig& cfg) noexcept {
     return res;
   }
 
-  for (const auto& dir : {fs::path(cfg.root()), cfg.mapDir(), cfg.linkDir()}) {
+  for (const auto& dir :
+       {fs::path(cfg.root()), cfg.mapDir(), cfg.linkDir(), cfg.programDir()}) {
     if (auto res = makeDir(dir); !res) {
       return res;
     }
@@ -111,6 +120,20 @@ Expected<> pinLink(
 
   bpfj::libbpf::BpfLink wrapped(link);
   return wrapped.pin((dir / name).c_str());
+}
+
+Expected<> pinProgram(
+    struct bpf_program* program,
+    const PinConfig& cfg,
+    std::string_view name) noexcept {
+  if (!program || ::bpf_program__fd(program) < 0) {
+    return makeUnexpected(makeError(
+        std::errc::not_supported, "program ", name, " is not loaded"));
+  }
+  if (::bpf_program__pin(program, cfg.programPath(name).c_str()) != 0) {
+    return makeUnexpected(makeErrnoError("failed to pin program ", name));
+  }
+  return unit;
 }
 
 Expected<> pinMapAt(
@@ -148,6 +171,19 @@ Expected<Fd> openPinnedMap(
   const int fd = ::bpf_obj_get(path.c_str());
   if (fd < 0) {
     return makeUnexpected(makeErrnoError("failed to open pinned map ", path));
+  }
+
+  return Fd(fd);
+}
+
+Expected<Fd> openPinnedProgram(
+    const PinConfig& cfg,
+    std::string_view name) noexcept {
+  const std::string path = cfg.programPath(name);
+  const int fd = ::bpf_obj_get(path.c_str());
+  if (fd < 0) {
+    return makeUnexpected(
+        makeErrnoError("failed to open pinned program ", path));
   }
 
   return Fd(fd);

@@ -20,27 +20,6 @@ using namespace bpfjailer;
 
 namespace {
 
-// Stands in for a loaded skeleton for the pure-userspace tests below, which run
-// PerfMap against a heap arena carved out of host memory instead of a BPF
-// arena. PerfMap only ever reaches the arena through bss().bpfj_heap_ctrl, so
-// this is all a skeleton has to provide.
-class HostArenaSkel {
- public:
-  explicit HostArenaSkel(void* arena)
-      : bss_{static_cast<struct bpfj_heap_control*>(arena)} {}
-
-  struct Bss {
-    struct bpfj_heap_control* bpfj_heap_ctrl = nullptr;
-  };
-
-  Bss& bss() {
-    return bss_;
-  }
-
- private:
-  Bss bss_;
-};
-
 void runPerfMapLookup(
     __u64 needle,
     const std::unordered_map<__u64, __u64>& entries,
@@ -167,28 +146,27 @@ TEST(PerfMap, TestMaxU64Key) {
 }
 
 TEST(PerfMap, TestDestroy) {
-  auto arenaSize = BPFJ_HEAP_INIT_PAGES * BPFJ_HEAP_PAGE_SIZE;
-  std::vector<char> arena(arenaSize, 0);
-  auto* base = arena.data();
-  bpfj_heap_init_arena(base, arenaSize);
-  auto skel = std::make_shared<HostArenaSkel>(base);
+  using Skel = bpfj::libbpf::BpfSkel<perf_map_test_bpf>;
+  auto created = Skel::create();
+  ASSERT_OK(created);
+  const auto skel = *created;
+  ASSERT_OK(skel->load());
+  ASSERT_OK(heap::init(skel));
 
-  struct bpfj_perf_map* map = nullptr;
-  PerfMap perfMap{skel, map};
+  PerfMap perfMap{skel, skel->bss().map};
   std::unordered_map<__u64, __u64> entries = {{1, 10}, {2, 20}};
   auto res = perfMap.init(entries);
   ASSERT_TRUE(res);
 
-  ASSERT_NE(map, nullptr);
-  ASSERT_NE(map->seeds, nullptr);
-  ASSERT_NE(map->slots, nullptr);
+  ASSERT_NE(skel->bss().map, nullptr);
+  ASSERT_NE(skel->bss().map->seeds, nullptr);
+  ASSERT_NE(skel->bss().map->slots, nullptr);
 
   // destroy() owns the header too, so it releases every byte it allocated and
   // leaves the caller's slot empty.
   perfMap.destroy();
-  ASSERT_EQ(map, nullptr);
-  ASSERT_EQ(
-      reinterpret_cast<struct bpfj_heap_control*>(base)->current_used, 0U);
+  ASSERT_EQ(skel->bss().map, nullptr);
+  ASSERT_EQ(heap::currentUsed(skel), 0U);
 }
 
 TEST(PerfMap, TestFailedInitUnwindsItself) {
@@ -199,13 +177,13 @@ TEST(PerfMap, TestFailedInitUnwindsItself) {
   // still set. Note there is no destroy() call below -- that is the point.
   //
   // The failure is forced by asking for more slot table than the arena can hold
-  // at any size, which fails after the header is already allocated. The arena
-  // is sized to BPFJ_HEAP_MAX_ARENA_SIZE because the allocation path grows it
-  // on demand and would otherwise write past the vector.
-  std::vector<char> arena(BPFJ_HEAP_MAX_ARENA_SIZE, 0);
-  auto* base = arena.data();
-  bpfj_heap_init_arena(base, BPFJ_HEAP_INIT_PAGES * BPFJ_HEAP_PAGE_SIZE);
-  auto skel = std::make_shared<HostArenaSkel>(base);
+  // at any size, which fails after the header is already allocated.
+  using Skel = bpfj::libbpf::BpfSkel<perf_map_test_bpf>;
+  auto created = Skel::create();
+  ASSERT_OK(created);
+  const auto skel = *created;
+  ASSERT_OK(skel->load());
+  ASSERT_OK(heap::init(skel));
 
   // init() over-provisions to 2 slots per key, so this many keys needs more
   // than the whole arena for the slot table alone. A vector of pairs rather
@@ -218,14 +196,12 @@ TEST(PerfMap, TestFailedInitUnwindsItself) {
     entries.emplace_back(static_cast<__u64>(i) + 1, i);
   }
 
-  struct bpfj_perf_map* map = nullptr;
   {
-    PerfMap perfMap{skel, map};
+    PerfMap perfMap{skel, skel->bss().map};
     auto res = perfMap.init(entries);
     ASSERT_FALSE(res);
-    ASSERT_EQ(map, nullptr);
-    ASSERT_EQ(
-        reinterpret_cast<struct bpfj_heap_control*>(base)->current_used, 0U);
+    ASSERT_EQ(skel->bss().map, nullptr);
+    ASSERT_EQ(heap::currentUsed(skel), 0U);
   }
 }
 
@@ -235,28 +211,27 @@ TEST(PerfMap, TestFailedInitUnwindsItself) {
 // perfect hash for bucket". On twshared that made the entire FS2 enforcer fail
 // to load. The table must over-provision slots (load factor ~0.5). Guard that
 // invariant directly so a revert to a minimal table is caught deterministically
-// — independent of the pseudo-random placement outcome. Pure userspace: no VM
-// or skel needed, just a heap arena over host memory.
+// — independent of the pseudo-random placement outcome.
 TEST(PerfMap, TestLargePolicyOverProvisionsSlots) {
-  const auto arenaSize = BPFJ_HEAP_INIT_PAGES * BPFJ_HEAP_PAGE_SIZE;
-  std::vector<char> arena(arenaSize, 0);
-  auto* base = arena.data();
-  bpfj_heap_init_arena(base, arenaSize);
-  auto skel = std::make_shared<HostArenaSkel>(base);
+  using Skel = bpfj::libbpf::BpfSkel<perf_map_test_bpf>;
+  auto created = Skel::create();
+  ASSERT_OK(created);
+  const auto skel = *created;
+  ASSERT_OK(skel->load());
+  ASSERT_OK(heap::init(skel));
 
   std::unordered_map<__u64, __u64> entries;
   for (__u64 i = 0; i < 512; ++i) {
     entries[(i * 2654435761ULL) + 1] = i + 1;
   }
 
-  struct bpfj_perf_map* map = nullptr;
-  PerfMap perfMap{skel, map};
+  PerfMap perfMap{skel, skel->bss().map};
   auto res = perfMap.init(entries);
   ASSERT_TRUE(res);
 
-  ASSERT_NE(map, nullptr);
-  ASSERT_EQ(map->num_buckets, entries.size());
-  ASSERT_GE(map->num_slots, 2U * map->num_buckets);
+  ASSERT_NE(skel->bss().map, nullptr);
+  ASSERT_EQ(skel->bss().map->num_buckets, entries.size());
+  ASSERT_GE(skel->bss().map->num_slots, 2U * skel->bss().map->num_buckets);
 
   perfMap.destroy();
 }

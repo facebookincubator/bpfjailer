@@ -96,6 +96,9 @@ int bpfj_heap_syscall(void* ctx) {
     return (int)bpfj_heap_free(req.arg);
   }
   if (req.op == BPFJ_HEAP_SYSCALL_GROW) {
+    if (req.expected_arena_size != 0) {
+      return (int)bpfj_heap_grow_preallocated(req.arg, req.expected_arena_size);
+    }
     return (int)bpfj_heap_grow(req.arg);
   }
   return -EINVAL;
@@ -138,6 +141,9 @@ __noinline long bpfj_heap_grow(u32 min_bytes) {
     return ctrl->grow_gen != old_gen ? 0 : -ENOMEM;
   }
 
+  // The pages must exist before taking the allocator lock: page allocation is
+  // sleepable, while checking the new block into TLSF is a short BPF-only
+  // critical section.
   {
     BPFJ_LOCK_WAIT_GUARD(hl, &ctrl->lock);
     if (BPFJ_LOCK_WAIT_HELD(hl) && ctrl->grow_gen == old_gen) {
@@ -160,7 +166,8 @@ __noinline long bpfj_heap_grow(u32 min_bytes) {
   return ctrl->grow_gen != old_gen ? 0 : -EBUSY;
 }
 
-// Publish pages userspace prefaulted without taking the shared arena lock.
+// Publish pages userspace prefaulted without taking the shared arena lock in
+// userspace. The expected size makes a concurrent completed grow a no-op.
 __noinline long bpfj_heap_grow_preallocated(
     u32 min_bytes,
     u32 expected_arena_size) {
@@ -175,7 +182,6 @@ __noinline long bpfj_heap_grow_preallocated(
   if (!BPFJ_LOCK_WAIT_HELD(hl)) {
     return -EBUSY;
   }
-
   if (ctrl->arena_size != expected_arena_size) {
     return 0;
   }
@@ -187,16 +193,15 @@ __noinline long bpfj_heap_grow_preallocated(
   if (new_block_size == 0) {
     return -ENOMEM;
   }
-  u64 new_arena_size = (u64)expected_arena_size + new_block_size;
 
-  ctrl->arena_size = (u32)new_arena_size;
+  ctrl->arena_size = expected_arena_size + new_block_size;
   struct bpfj_heap_block_hdr __arena* new_hdr =
       bpfj_heap_block_at(base, expected_arena_size);
-  new_hdr->size_and_flags = (u32)new_block_size;
+  new_hdr->size_and_flags = new_block_size;
   new_hdr->prev_phys_offset = BPFJ_HEAP_NULL;
 
   u32 fli, sli;
-  bpfj_heap_mapping((u32)new_block_size, &fli, &sli);
+  bpfj_heap_mapping(new_block_size, &fli, &sli);
   bpfj_heap_insert_free_block(base, ctrl, expected_arena_size, fli, sli);
   ++ctrl->grow_gen;
   return 0;
@@ -219,8 +224,8 @@ __noinline long bpfj_heap_alloc(u32 size) {
   struct bpfj_heap_control __arena* ctrl = bpfj_heap_get_ctrl();
   void __arena* base = (void __arena*)ctrl;
 
-  BPFJ_LOCK_GUARD(hl, &ctrl->lock);
-  if (!BPFJ_LOCK_IS_ACQUIRED(hl)) {
+  BPFJ_LOCK_WAIT_GUARD(hl, &ctrl->lock);
+  if (!BPFJ_LOCK_WAIT_HELD(hl)) {
     return -EBUSY;
   }
 
@@ -240,8 +245,8 @@ __noinline long bpfj_heap_free(u32 offset) {
   struct bpfj_heap_control __arena* ctrl = bpfj_heap_get_ctrl();
   void __arena* base = (void __arena*)ctrl;
 
-  BPFJ_LOCK_GUARD(hl, &ctrl->lock);
-  if (!BPFJ_LOCK_IS_ACQUIRED(hl)) {
+  BPFJ_LOCK_WAIT_GUARD(hl, &ctrl->lock);
+  if (!BPFJ_LOCK_WAIT_HELD(hl)) {
     return -EBUSY;
   }
 

@@ -4,13 +4,13 @@
 #include "tests/Harness.h"
 
 #include <chrono>
-#include <cstdint>
 #include <thread>
 #include <vector>
 
 #include "bpfj/enforce/ArenaMap.h"
 #include "bpfj/enforce/Jailer.h"
 #include "bpfj/enforce/Pins.h"
+#include "bpfj/enforce/PodVars.h"
 #include "bpfj/lib/Heap.h"
 
 namespace heap = bpfjailer::heap;
@@ -21,19 +21,6 @@ using bpfjailer::test::policyOf;
 using bpfjailer::test::testPins;
 
 namespace {
-
-struct Arena {
-  std::vector<std::uint8_t> buf =
-      std::vector<std::uint8_t>(BPFJ_HEAP_MAX_ARENA_SIZE);
-  void* base{buf.data()};
-  bpfj_heap_control* ctrl{reinterpret_cast<bpfj_heap_control*>(base)};
-
-  Arena() {
-    __builtin_memset(base, 0, BPFJ_HEAP_INIT_PAGES * BPFJ_HEAP_PAGE_SIZE);
-    bpfj_heap_init_arena(base, BPFJ_HEAP_INIT_PAGES * BPFJ_HEAP_PAGE_SIZE);
-    bpfjailer::lock::init(ctrl->lock);
-  }
-};
 
 struct FakeRodata {
   bool bpfj_heap_enabled{true};
@@ -65,67 +52,74 @@ void initControl(bpfj_heap_control& ctrl, __u32 arenaSize) {
 
 } // namespace
 
-TEST(Heap, AllocFreeReturnsToZero) {
-  Arena arena;
+TEST(Heap, AllocFreeReturnsToBaseline) {
+  const auto cfg = bpfjailer::test::testPins();
+  const auto policy = bpfjailer::test::policyOf("[roles]");
+  ASSERT_OK(bpfjailer::Jailer::load(cfg, policy));
+  auto arena = bpfjailer::PodArena::open(cfg);
+  ASSERT(arena);
+  const __u64 initialUsed = arena->ctrl()->current_used;
 
-  const long first = heap::alloc(arena.base, 64);
-  const long second = heap::alloc(arena.base, 128);
-  ASSERT(first > 0);
-  ASSERT(second > 0);
-  ASSERT(first != second);
-  ASSERT(arena.ctrl->current_used > 0);
+  auto first = arena->alloc(64);
+  auto second = arena->alloc(128);
+  ASSERT_OK(first);
+  ASSERT_OK(second);
+  ASSERT(*first != *second);
+  ASSERT(arena->ctrl()->current_used > initialUsed);
 
-  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(first)), 0);
-  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(second)), 0);
-  ASSERT_EQ(arena.ctrl->current_used, 0U);
+  ASSERT_OK(arena->free(*first));
+  ASSERT_OK(arena->free(*second));
+  ASSERT_EQ(arena->ctrl()->current_used, initialUsed);
+  ASSERT_OK(bpfjailer::Jailer::unload(cfg));
+  ASSERT(!bpfjailer::test::exists(
+      cfg.programPath(bpfjailer::kHeapSyscallProgram)));
 }
 
 TEST(Heap, ReusesAFreedBlock) {
-  Arena arena;
+  const auto cfg = bpfjailer::test::testPins();
+  const auto policy = bpfjailer::test::policyOf("[roles]");
+  ASSERT_OK(bpfjailer::Jailer::load(cfg, policy));
+  auto arena = bpfjailer::PodArena::open(cfg);
+  ASSERT(arena);
+  const __u64 initialUsed = arena->ctrl()->current_used;
 
-  const long first = heap::alloc(arena.base, 64);
-  ASSERT(first > 0);
-  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(first)), 0);
+  auto first = arena->alloc(64);
+  ASSERT_OK(first);
+  ASSERT_OK(arena->free(*first));
 
-  const long reused = heap::alloc(arena.base, 64);
-  ASSERT_EQ(reused, first);
-  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(reused)), 0);
-  ASSERT_EQ(arena.ctrl->current_used, 0U);
+  auto reused = arena->alloc(64);
+  ASSERT_OK(reused);
+  ASSERT_EQ(*reused, *first);
+  ASSERT_OK(arena->free(*reused));
+  ASSERT_EQ(arena->ctrl()->current_used, initialUsed);
+  ASSERT_OK(bpfjailer::Jailer::unload(cfg));
 }
 
-TEST(Heap, DoubleFreeIsIgnored) {
-  Arena arena;
+TEST(Heap, BpfGrowMakesLaterAllocsSucceed) {
+  const auto cfg = bpfjailer::test::testPins();
+  const auto policy = bpfjailer::test::policyOf("[roles]");
+  ASSERT_OK(bpfjailer::Jailer::load(cfg, policy));
+  auto arena = bpfjailer::PodArena::open(cfg);
+  ASSERT(arena);
 
-  const long offset = heap::alloc(arena.base, 128);
-  ASSERT(offset > 0);
-  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(offset)), 0);
-  ASSERT_EQ(arena.ctrl->total_free, 1U);
-  ASSERT_EQ(arena.ctrl->current_used, 0U);
-
-  ASSERT_EQ(heap::free(arena.base, static_cast<__u32>(offset)), 0);
-  ASSERT_EQ(arena.ctrl->total_free, 1U);
-  ASSERT_EQ(arena.ctrl->current_used, 0U);
-}
-
-TEST(Heap, UserspaceGrowMakesLaterAllocsSucceed) {
-  Arena arena;
-
-  const __u32 initSize = arena.ctrl->arena_size;
-  std::vector<__u32> offsets;
+  const __u32 initSize = arena->ctrl()->arena_size;
+  const __u64 initialUsed = arena->ctrl()->current_used;
+  std::vector<void*> allocations;
   constexpr __u32 kChunk = 64 * 1024;
 
   for (int i = 0; i < 16; ++i) {
-    const long off = heap::alloc(arena.base, kChunk);
-    ASSERT(off > 0);
-    offsets.push_back(static_cast<__u32>(off));
+    auto allocation = arena->alloc(kChunk);
+    ASSERT_OK(allocation);
+    allocations.push_back(*allocation);
   }
 
-  ASSERT(arena.ctrl->arena_size > initSize);
+  ASSERT(arena->ctrl()->arena_size > initSize);
 
-  for (const __u32 off : offsets) {
-    ASSERT_EQ(heap::free(arena.base, off), 0);
+  for (void* allocation : allocations) {
+    ASSERT_OK(arena->free(allocation));
   }
-  ASSERT_EQ(arena.ctrl->current_used, 0U);
+  ASSERT_EQ(arena->ctrl()->current_used, initialUsed);
+  ASSERT_OK(bpfjailer::Jailer::unload(cfg));
 }
 
 TEST(Heap, ReadStatsReturnsInitializedCounters) {

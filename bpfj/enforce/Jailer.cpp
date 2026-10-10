@@ -207,6 +207,11 @@ Expected<ScratchMapFds> Jailer::load(
   if (auto res = heap::init(created.value()); !res) {
     return makeUnexpected(res.error());
   }
+  if (auto res = pins::pinProgram(
+          skel.progs().bpfj_heap_syscall, cfg, kHeapSyscallProgram);
+      !res) {
+    return makeUnexpected(res.error());
+  }
 
   auto generation = arena::generationForMapExtra(
       reinterpret_cast<std::uintptr_t>(skel.bss().bpfj_heap_ctrl));

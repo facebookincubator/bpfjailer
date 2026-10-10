@@ -8,10 +8,10 @@
 // BPF global, which is how both worlds find the arena.
 
 #include <sys/mman.h>
-#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <optional>
 
 #include <bpf/bpf.h>
@@ -23,8 +23,8 @@
 
 namespace bpfjailer::heap {
 
-// How long a userspace heap operation waits for the arena lock. BPF holders
-// release within one program run, so reaching this means a wedged lock.
+// Shared userspace structures other than the heap use this bounded wait for
+// their own arena locks.
 constexpr auto kLockTimeout = std::chrono::seconds{5};
 
 template <typename T>
@@ -130,14 +130,8 @@ inline __u32 ptrToOffset(void* base, const void* ptr) {
       reinterpret_cast<std::uintptr_t>(base));
 }
 
-template <typename Skel>
 inline long
-runHeapSyscall(Skel&& skel, __u32 op, __u32 arg, __u32 expectedArenaSize = 0) {
-  if (!skel->rodata().bpfj_heap_enabled) {
-    return op == BPFJ_HEAP_SYSCALL_FREE ? 0 : BPFJ_HEAP_NULL;
-  }
-
-  const int progFd = bpf_program__fd(skel->progs().bpfj_heap_syscall);
+runHeapSyscall(int progFd, __u32 op, __u32 arg, __u32 expectedArenaSize = 0) {
   if (progFd < 0) {
     BPFJ_LOG(ERR) << "heap: bpfj_heap_syscall fd is invalid";
     return -EBADF;
@@ -160,112 +154,44 @@ runHeapSyscall(Skel&& skel, __u32 op, __u32 arg, __u32 expectedArenaSize = 0) {
   return static_cast<long>(static_cast<std::int32_t>(opts.retval));
 }
 
-// Userspace alloc/free (call after init)
-
-// Grow the committed free space by at least 'minBytes' and insert it as one
-// free block, the new pages faulted in and zeroed as init() does so they are
-// backed for both worlds. False at BPFJ_HEAP_MAX_ARENA_SIZE, and the caller
-// must hold the arena lock; bpfj_arena_double() is the BPF side.
-inline bool growLocked(void* base, __u32 minBytes) {
-  auto* ctrl = reinterpret_cast<struct bpfj_heap_control*>(base);
-  __u32 oldSize = ctrl->arena_size;
-  if (oldSize >= BPFJ_HEAP_MAX_ARENA_SIZE) {
-    return false;
-  }
-
-  // Enough for the block header, alignment, and TLSF's good-fit rounding: a
-  // request is rounded to the top of its sub-bucket before the search, so the
-  // slack must cover a whole granule, 2^(fls(size) - SLI_LOG2). Two pages was
-  // exactly enough at 128 KiB and two short at 256 KiB.
-  __u64 want = bpfj_heap_adjust_size(minBytes);
-  want += (__u64{1}
-           << (bpfj_heap_fls(static_cast<__u32>(want)) - BPFJ_HEAP_SLI_LOG2)) -
-      1;
-
-  __u64 pages = (want + BPFJ_HEAP_PAGE_SIZE - 1) / BPFJ_HEAP_PAGE_SIZE;
-  if (pages < BPFJ_HEAP_GROW_PAGES) {
-    pages = BPFJ_HEAP_GROW_PAGES;
-  }
-  __u64 newBlockSize = pages * BPFJ_HEAP_PAGE_SIZE;
-  __u64 newSize = static_cast<__u64>(oldSize) + newBlockSize;
-  if (newSize > BPFJ_HEAP_MAX_ARENA_SIZE) {
-    newSize = BPFJ_HEAP_MAX_ARENA_SIZE;
-    newBlockSize = newSize - oldSize;
-  }
-
-  // Fault in and zero the region as init() does, bumping arena_size before
-  // the insert so the new block is treated as the arena tail.
-  memset(reinterpret_cast<char*>(base) + oldSize, 0, newBlockSize);
-  ctrl->arena_size = static_cast<__u32>(newSize);
-
-  auto* hdr = bpfj_heap_block_at(base, oldSize);
-  hdr->size_and_flags = static_cast<__u32>(newBlockSize);
-  hdr->prev_phys_offset = BPFJ_HEAP_NULL;
-
-  __u32 fli = 0;
-  __u32 sli = 0;
-  bpfj_heap_mapping(static_cast<__u32>(newBlockSize), &fli, &sli);
-  bpfj_heap_insert_free_block(base, ctrl, oldSize, fli, sli);
-  ++ctrl->grow_gen;
-  return true;
-}
-
-// Grow the arena, taking the arena lock. Returns false if the arena is already
-// at BPFJ_HEAP_MAX_ARENA_SIZE or the lock could not be taken.
-inline bool grow(void* base, __u32 minBytes) {
-  auto* ctrl = reinterpret_cast<struct bpfj_heap_control*>(base);
-  lock::Guard guard{ctrl->lock, kLockTimeout};
-  if (!guard.owns()) {
-    BPFJ_LOG(ERR) << "heap: timed out taking the arena lock to grow";
-    return false;
-  }
-  return growLocked(base, minBytes);
-}
-
-// Allocate 'size' bytes, returning the heap offset or BPFJ_HEAP_NULL, and
-// growing the arena when the free list cannot satisfy the request.
-inline long alloc(void* base, __u32 size) {
-  auto* ctrl = reinterpret_cast<struct bpfj_heap_control*>(base);
-  lock::Guard guard{ctrl->lock, kLockTimeout};
-  if (!guard.owns()) {
-    BPFJ_LOG(ERR) << "heap: timed out taking the arena lock to allocate";
-    return BPFJ_HEAP_NULL;
-  }
-
-  long offset = bpfj_heap_alloc_impl(base, ctrl, size);
-  if (offset <= 0 && growLocked(base, size)) {
-    offset = bpfj_heap_alloc_impl(base, ctrl, size);
+// Allocate through the BPF helper so userspace does not take the shared arena
+// lock directly. On exhaustion, ask BPF to grow the arena and then retry once.
+inline long allocOffset(int progFd, void* arena, __u32 size) {
+  long offset = runHeapSyscall(progFd, BPFJ_HEAP_SYSCALL_ALLOC, size);
+  if (offset == BPFJ_HEAP_NULL || offset == -ENOMEM) {
+    // Touch the future pages before asking BPF to publish them. Some kernels
+    // cannot allocate arena pages from BPF_PROG_RUN, and userspace must not
+    // take the allocator's waiting lock to do this itself.
+    static std::mutex growMutex;
+    std::lock_guard guard{growMutex};
+    auto* ctrl = static_cast<struct bpfj_heap_control*>(arena);
+    const __u32 oldSize = ctrl->arena_size;
+    const __u32 growSize = bpfj_heap_growth_size(size, oldSize);
+    if (growSize == 0) {
+      return -ENOMEM;
+    }
+    std::memset(static_cast<char*>(arena) + oldSize, 0, growSize);
+    const long ret =
+        runHeapSyscall(progFd, BPFJ_HEAP_SYSCALL_GROW, size, oldSize);
+    if (ret < 0) {
+      BPFJ_LOG(ERR) << "heap: BPF arena growth failed: " << ret;
+      return ret;
+    }
+    offset = runHeapSyscall(progFd, BPFJ_HEAP_SYSCALL_ALLOC, size);
   }
   return offset;
 }
 
-// Allocate through the BPF helper so userspace does not take the shared arena
-// lock directly. On exhaustion, ask BPF to grow the arena and then retry once.
 template <typename Skel>
 inline long allocOffset(Skel&& skel, __u32 size) {
   if constexpr (!BpfSkelWithHeapSyscall<Skel>) {
-    return alloc(base(std::forward<Skel>(skel)), size);
+    return -ENOTSUP;
   } else {
     if (!skel->rodata().bpfj_heap_enabled) {
       return BPFJ_HEAP_NULL;
     }
-    if (bpf_program__fd(skel->progs().bpfj_heap_syscall) < 0) {
-      return alloc(base(std::forward<Skel>(skel)), size);
-    }
-
-    long offset =
-        runHeapSyscall(std::forward<Skel>(skel), BPFJ_HEAP_SYSCALL_ALLOC, size);
-    if (offset == BPFJ_HEAP_NULL || offset == -ENOMEM) {
-      const long ret = runHeapSyscall(
-          std::forward<Skel>(skel), BPFJ_HEAP_SYSCALL_GROW, size);
-      if (ret < 0) {
-        BPFJ_LOG(ERR) << "heap: BPF arena growth failed: " << ret;
-        return ret;
-      }
-      offset = runHeapSyscall(
-          std::forward<Skel>(skel), BPFJ_HEAP_SYSCALL_ALLOC, size);
-    }
-    return offset;
+    return allocOffset(
+        bpf_program__fd(skel->progs().bpfj_heap_syscall), base(skel), size);
   }
 }
 
@@ -311,24 +237,11 @@ inline T* allocArray(Skel&& skel, std::size_t n, const Args&... args) {
   return ptr;
 }
 
-// Free a previously allocated block by heap offset.
-inline long free(void* base, __u32 offset) {
-  auto* ctrl = reinterpret_cast<struct bpfj_heap_control*>(base);
-  lock::Guard guard{ctrl->lock, kLockTimeout};
-  if (!guard.owns()) {
-    BPFJ_LOG(ERR) << "heap: timed out taking the arena lock to free";
-    return -EBUSY;
-  }
-  return bpfj_heap_free_impl(base, ctrl, offset);
-}
-
-// Free a previously allocated block by arena pointer. A nullptr is a no-op.
-template <typename T>
-inline long free(void* base, T* ptr) {
-  if (ptr == nullptr) {
+inline long freeOffset(int progFd, __u32 offset) {
+  if (offset == BPFJ_HEAP_NULL) {
     return 0;
   }
-  return free(base, ptrToOffset(base, ptr));
+  return runHeapSyscall(progFd, BPFJ_HEAP_SYSCALL_FREE, offset);
 }
 
 template <typename Skel>
@@ -337,16 +250,12 @@ inline long freeOffset(Skel&& skel, __u32 offset) {
     return 0;
   }
   if constexpr (!BpfSkelWithHeapSyscall<Skel>) {
-    return free(base(std::forward<Skel>(skel)), offset);
+    return -ENOTSUP;
   } else {
     if (!skel->rodata().bpfj_heap_enabled) {
       return 0;
     }
-    if (bpf_program__fd(skel->progs().bpfj_heap_syscall) < 0) {
-      return free(base(std::forward<Skel>(skel)), offset);
-    }
-    return runHeapSyscall(
-        std::forward<Skel>(skel), BPFJ_HEAP_SYSCALL_FREE, offset);
+    return freeOffset(bpf_program__fd(skel->progs().bpfj_heap_syscall), offset);
   }
 }
 

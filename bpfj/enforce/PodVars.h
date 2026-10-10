@@ -100,6 +100,7 @@ class PodArena {
   void reset() noexcept;
 
   std::shared_ptr<void> owner_;
+  Fd heapSyscall_;
   void* base_ = nullptr;
   std::uint64_t mapExtra_ = 0;
 };
