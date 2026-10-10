@@ -169,6 +169,10 @@ BPF_LIBARENA_FLAGS = \
 	-I$(LIBARENA_INCLUDE) \
 	-I$(dir $(VMLINUX))
 
+# BPF compilation needs glibc's headers from the host's multiarch directory.
+BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 | \
+	sed -n '/<...> search starts here:/,/End of search list./{ s| \(/.*\)|-idirafter \1|p }')
+
 # ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
@@ -578,7 +582,7 @@ $(VMLINUX):
 # leaves behind looks like the source change simply had no effect.
 $(BUILD)/%.bpf.o: %.bpf.c $(VMLINUX) $(LIBARENA_CONFIG) | libarena-check
 	@mkdir -p $(dir $@)
-	$(CLANG) $(BPF_CFLAGS) $(BPF_LIBARENA_FLAGS) $(INCLUDES) -MMD -MP -MT $@ -MF $(@:.bpf.o=.bpf.d) -c $< -o $@.tmp
+	$(CLANG) $(BPF_CFLAGS) $(BPF_LIBARENA_FLAGS) $(INCLUDES) $(BPF_SYS_INCLUDES) -MMD -MP -MT $@ -MF $(@:.bpf.o=.bpf.d) -c $< -o $@.tmp
 	$(BPFTOOL) gen object $@ $@.tmp
 	@rm -f $@.tmp
 

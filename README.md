@@ -53,7 +53,12 @@ and an unprivileged process can enroll itself through `bpfjsrv`/`bpfjclient`.
 - Linux 6.16 or newer with BPF LSM enabled (`CONFIG_BPF_LSM=y` and `bpf` in
   the `lsm=` boot parameter). BpfJailer is only tested on 6.16+, and older
   kernels are not supported.
-- clang (for BPF codegen), `bpftool`, and a C++20 compiler.
+- clang 22 or newer for BPF codegen, `bpftool`, and a C++20 compiler. clang 20
+  and 21 emit no `addr_space_cast` for a `__builtin_memcpy` from arena memory,
+  so the verifier rejects the jailer they build.
+- A kernel with btrfs built in, `CONFIG_BTRFS_FS=y` rather than a module. The
+  BPF programs read btrfs inode types from vmlinux.h, which the Makefile
+  generates from the running kernel's BTF.
 - libbpf
 - A checkout of [libarena](https://github.com/libbpf/libarena), which provides
   the arena spin lock the BPF programs use. 
