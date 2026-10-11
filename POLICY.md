@@ -100,6 +100,9 @@ supported because a directory rule already covers its subtree. The variable
 must be declared by top-level `vars` and present on the pod for the dependent
 pattern to match. Allowed rules require `access = "read-only"` or
 `access = "read-write"`; denied rules omit `access`.
+At equal depth, the rule with more non-wildcard components wins; a bound
+`${NAME}` component is specific, while `*` is not. An equally specific denial
+wins a tie.
 
 `exec-paths` uses the same cached path matching, independently of `paths` and
 fs-verity. It is an array of rule tables with a `path` and boolean `allow`.

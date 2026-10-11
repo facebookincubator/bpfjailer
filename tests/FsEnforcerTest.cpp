@@ -282,6 +282,30 @@ TEST(FsEnforcer, LongestPathWins) {
   ASSERT_EQ(actor.run(), EACCES);
 }
 
+TEST(FsEnforcer, DenialWinsEquallySpecificTie) {
+  char root[] = "/tmp/bpfj-fs-deny-tie-test-XXXXXX";
+  ASSERT(::mkdtemp(root) != nullptr);
+  const std::string srv = std::string(root) + "/srv";
+  const std::string secrets = srv + "/secrets";
+  ASSERT_EQ(::mkdir(srv.c_str(), 0700), 0);
+  ASSERT_EQ(::mkdir(secrets.c_str(), 0700), 0);
+  const std::string file = secrets + "/data";
+  const int fd = ::open(file.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+  ASSERT(fd >= 0);
+  ASSERT_EQ(::close(fd), 0);
+
+  attach(rule(srv + "/*", "read-write") + rule(secrets, std::nullopt));
+
+  Child actor([&] { return openErrno(file, O_WRONLY); });
+  enroll("svc", actor.pid());
+  ASSERT_EQ(actor.run(), EACCES);
+
+  ASSERT_EQ(::unlink(file.c_str()), 0);
+  ASSERT_EQ(::rmdir(secrets.c_str()), 0);
+  ASSERT_EQ(::rmdir(srv.c_str()), 0);
+  ASSERT_EQ(::rmdir(root), 0);
+}
+
 TEST(FsEnforcer, RootPolicyAppliesToDescendants) {
   Fixture fixture;
   attach(rule("/", std::nullopt));
