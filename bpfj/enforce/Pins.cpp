@@ -21,7 +21,7 @@ namespace fs = std::filesystem;
 // The jail membership every BPF object declares: the per-task membership, the
 // arena their pod payloads and policy graph live in, and the shared
 // event/log ring buffers.
-constexpr std::array<std::string_view, 7> kSharedMapNames = {
+constexpr std::array<std::string_view, 10> kSharedMapNames = {
     "bpfj_task_map",
     "bpfj_generation_control",
     "bpfj_heap_arena",
@@ -29,6 +29,9 @@ constexpr std::array<std::string_view, 7> kSharedMapNames = {
     "bpfj_active_enrolls",
     "bpfj_event_map",
     "bpfj_log_map",
+    "bpfj_file_match_exact_cache",
+    "bpfj_file_match_checkpoint_cache",
+    "bpfj_file_match_state",
 };
 
 // logging_bpf.h measures the ring buffer in 4 KiB pages and the closed source
@@ -40,7 +43,8 @@ constexpr std::uint32_t kBpfLogMapEntries = 64 * 4096;
   // Programs that neither allocate arena state nor emit BPF logs do not
   // declare these maps. They still share the maps when present, but absence
   // must not make pinning an otherwise independent enforcer fail.
-  return name == "bpfj_heap_arena" || name == "bpfj_log_map";
+  return name == "bpfj_heap_arena" || name == "bpfj_log_map" ||
+      name.starts_with("bpfj_file_match_");
 }
 
 // 0700 because the tree exposes the jail membership of every task on the host.

@@ -165,7 +165,14 @@ TEST(ExecEnforcer, LoadPinsEveryHook) {
   ASSERT(linkPinned("bpfj_exec_bprm_check"));
   ASSERT(linkPinned("bpfj_exec_mmap_file"));
   ASSERT(linkPinned("bpfj_exec_file_mprotect"));
-  ASSERT(linkPinned("bpfj_exec_inode_rename"));
+  ASSERT(linkPinned("bpfj_matcher_state_inode_unlink"));
+  ASSERT(linkPinned("bpfj_matcher_state_inode_link"));
+  ASSERT(linkPinned("bpfj_matcher_state_inode_rename"));
+  ASSERT(linkPinned("bpfj_matcher_state_inode_rmdir"));
+  ASSERT(linkPinned("bpfj_matcher_state_vfs_unlink"));
+  ASSERT(linkPinned("bpfj_matcher_state_vfs_link"));
+  ASSERT(linkPinned("bpfj_matcher_state_vfs_rename"));
+  ASSERT(linkPinned("bpfj_matcher_state_vfs_rmdir"));
 }
 
 TEST(ExecEnforcer, MissingPolicyDeniesExec) {

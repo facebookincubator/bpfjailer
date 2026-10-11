@@ -1,12 +1,13 @@
 #pragma once
 
 #include <errno.h>
-#include "bpfj/lib/bpf/dyn_lru.h"
 #include "bpfj/lib/bpf/glob_map.h"
 #include "bpfj/lib/bpf/heap.h"
 #include "bpfj/lib/bpf/logging_bpf.h"
 #include "bpfj/lib/bpf/perf_map.h"
+#include "bpfj/lib/bpf/scratch.h"
 #include "bpfj/lib/bpf/vec.h"
+#include "bpfj/match/bpf/matcher_state.h"
 #include "bpfj/match/bpf/mount.h"
 #include "bpfj/match/bpf/types_file_match.h"
 #include "bpfj/match/bpf/types_file_match_cached.h"
@@ -15,8 +16,9 @@
 #define BPFJ_FILE_MATCH_CACHED_MAX_RECURSION 16384
 #endif
 #define BPFJ_FILE_MATCH_CACHED_BUF_SIZE 4096
-#define BPFJ_FILE_MATCH_CACHED_MAX_SAVED_DENTRIES 64
 #define BPFJ_FILE_MATCH_CACHED_MAX_DIR_DESCENDANTS 128
+#define BPFJ_FILE_MATCH_CACHED_CHECKPOINT_SIZE 16384
+#define BPFJ_FILE_MATCH_CACHED_MAX_CHECKPOINT_ITERS 32
 
 #define BPFJ_FILE_MATCH_CACHED_MAX_RETRIES 32
 #define BPFJ_FILE_MATCH_CACHED_MAX_CHILD_DENTRIES 8
@@ -41,8 +43,30 @@ static __always_inline u32 bpfj_file_hashlen_len(u64 hashlen) {
 extern const void rename_lock __ksym;
 extern const void btrfs_dir_inode_operations __ksym;
 
-volatile __u64 bpfj_file_match_cached_cache_hit_counter;
-volatile __u64 bpfj_file_match_cached_cache_miss_counter;
+// CPU striping avoids one globally contended counter cache line. The kernel can
+// migrate a sleepable program because these are ordinary BSS slots.
+enum bpfj_file_match_cached_stat {
+  BPFJ_FILE_MATCH_CACHED_STAT_HIT,
+  BPFJ_FILE_MATCH_CACHED_STAT_MISS,
+  BPFJ_FILE_MATCH_CACHED_STAT_BUSY,
+  BPFJ_FILE_MATCH_CACHED_STAT_INVALID,
+  BPFJ_FILE_MATCH_CACHED_STAT_INSERT_EXISTS,
+  BPFJ_FILE_MATCH_CACHED_STAT_INSERT_BUSY,
+  BPFJ_FILE_MATCH_CACHED_STAT_INSERT_ERROR,
+  BPFJ_FILE_MATCH_CACHED_STAT_RESERVED,
+  BPFJ_FILE_MATCH_CACHED_STAT_COUNT,
+};
+
+volatile __u64
+    bpfj_file_match_cached_cache_stats[BPFJ_FILE_MATCH_CACHED_STATS_SLOTS]
+                                      [BPFJ_FILE_MATCH_CACHED_STAT_COUNT];
+
+static __always_inline volatile __u64* bpfj_file_match_cached_stats_for_cpu(
+    void) {
+  __u32 cpu = bpf_get_smp_processor_id();
+  return bpfj_file_match_cached_cache_stats
+      [cpu & (BPFJ_FILE_MATCH_CACHED_STATS_SLOTS - 1)];
+}
 
 // Public API
 
@@ -62,7 +86,7 @@ volatile __u64 bpfj_file_match_cached_cache_miss_counter;
     long _out = -ENOMEM;                                          \
     if (_name) {                                                  \
       _bind(_name, _matcher, (uintptr_t)(_dentry), _uuid, _vars); \
-      _out = file_match_cached(_matcher, _name, _mount_cache);    \
+      _out = bpfj_fmc_run(_matcher, _name, _mount_cache);         \
     }                                                             \
     _out;                                                         \
   })
@@ -113,20 +137,6 @@ volatile __u64 bpfj_file_match_cached_cache_miss_counter;
     _ret;                                                                   \
   })
 
-// Topology changes are uncommon, and correctness matters more than preserving
-// unrelated cache entries. Retire the whole generation instead of allocating
-// and contending on the LRU from mutation hooks.
-#define BPFJ_FILE_MATCH_CACHED_INVALIDATE(_lru, _dentry)             \
-  ({                                                                 \
-    (void)(_lru);                                                    \
-    (void)(_dentry);                                                 \
-    __sync_fetch_and_add(&bpfj_file_match_cached_rename_counter, 1); \
-    0L;                                                              \
-  })
-
-#define BPFJ_FILE_MATCH_CACHED_INVALIDATE_ON_RENAME(_lru, _dentry) \
-  BPFJ_FILE_MATCH_CACHED_INVALIDATE(_lru, _dentry)
-
 // IMPLEMENTATION
 
 // Iterator for traversing the graph.
@@ -137,8 +147,17 @@ struct bpfj_file_match_cached_iter {
 };
 
 struct bpfj_file_match_cached_lock {
-  __u32 mount_lock;
+  __u64 mount_generation;
   __u32 rename_lock;
+};
+
+struct bpfj_file_match_cached_checkpoint {
+  __u64 rename_generation;
+  __u64 ancestry_bloom[2];
+  __u32 iter_count;
+  __u32 reserved;
+  struct bpfj_file_match_node
+      nodes[BPFJ_FILE_MATCH_CACHED_MAX_CHECKPOINT_ITERS];
 };
 
 struct bpfj_file_match_cached_state {
@@ -193,6 +212,13 @@ struct bpfj_file_match_cached_state {
   // saves another stack slot on the same verifier-limited call chain.
   struct bpfj_file_match_cached_lock walk_lock;
 
+  // Arena scratch for constructing native-map keys. Key construction reads
+  // kernel objects and therefore cannot write directly into task storage.
+  struct bpfj_file_match_cached_key cache_key;
+
+  __u64 rename_generation;
+  __u64 ancestry_bloom[2];
+
   // Output scratch for move_up. Keeping it here avoids an output local in the
   // walk loop, which is part of the verifier's deepest stack chain.
   uintptr_t walk_next;
@@ -214,7 +240,15 @@ struct bpfj_file_match_cached_state {
   // retry use bpf_loop without a second numeric iterator in the walk frame.
   long retry_result;
   long component_result;
+  __u32 walk_depth;
+  __u32 checkpoint_depth;
   bool completed_cycle;
+  bool has_pending_checkpoint;
+
+  // The most recent directory frontier is staged in arena memory. A short-
+  // lived scratch.h slot is claimed only while publishing it to a native map.
+  struct bpfj_file_match_cached_key checkpoint_key;
+  struct bpfj_file_match_cached_checkpoint pending_checkpoint;
 };
 
 // The iters' sizes are the counts now, so there is no separate count to keep in
@@ -233,15 +267,15 @@ bpfj_file_match_cached_iter_at(
 
 // Whether this matcher caches its matches at all.
 //
-// A matcher whose lru is NULL is walked every time. That is not a degenerate
-// state -- it is how an enforcer opts out. A cache is not free: it holds
-// entries, and it needs a rename hook to retire them, which runs on every
+// A matcher with caching disabled is walked every time. That is not a
+// degenerate state -- it is how an enforcer opts out. A cache is not free: it
+// holds entries, and it needs a rename hook to retire them, which runs on every
 // rename on the host whether or not this enforcer's paths were involved. For
 // hooks rare enough that the walk is cheaper than that, not caching is the
 // right answer, and then there is nothing to invalidate either.
 static __always_inline bool bpfj_file_match_cached_caches(
     struct bpfj_file_match_cached_state __arena* state) {
-  return state->matcher != NULL && state->matcher->lru != NULL;
+  return state->matcher != NULL && state->matcher->cache_cookie != 0;
 }
 
 static __always_inline bool bpfj_file_match_cached_leaf_cacheable(
@@ -264,6 +298,14 @@ static __always_inline bool bpfj_file_match_cached_leaf_cacheable(
   return is_dir || BPF_CORE_READ(inode, i_nlink) == 1;
 }
 
+static __always_inline bool bpfj_file_match_cached_is_dir(uintptr_t dentry) {
+  struct inode* inode = BPF_CORE_READ((struct dentry*)dentry, d_inode);
+  if (inode == NULL) {
+    return false;
+  }
+  return (BPF_CORE_READ(inode, i_mode) & 00170000) == 0040000;
+}
+
 // The position the iter at `index` reached, or -1 if there is no such iter.
 static __always_inline s32 bpfj_file_match_cached_pos(
     struct bpfj_file_match_cached_state __arena* state,
@@ -277,47 +319,38 @@ static __always_inline s32 bpfj_file_match_cached_pos(
   return iter != NULL ? iter->node.pos : -1;
 }
 
-// What the cache holds for one (file, pod): the counts, then the iters, then
-// the dentries, in a single block sized to what the walk actually produced.
-//
-// One block and not a copy of the run state, which is what it used to be. A run
-// state carries vecs whose backing allocations would leak on eviction, while
-// the LRU deliberately releases a value as one opaque refcounted block. A state
-// is also ~480 bytes before its
-// buffers, where a typical match needs the counts plus three iters and a dozen
-// dentries: well under two hundred, against the 1336 a cache entry used to
-// cost. LRU values are opaque, so entries of differing sizes are fine.
-//
-// The dentries come before the iters because they need eight-byte alignment and
-// an iter is ten bytes: putting the odd-sized array last keeps both aligned,
-// and the heap rounds a payload up to whole words, so the copy that rounds up
-// with it lands exactly at the end of the block.
-struct bpfj_file_match_cached_entry {
-  __u32 iter_count;
-  __u32 dentry_count;
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, BPFJ_FILE_MATCH_CACHED_CACHE_SIZE);
+  __type(key, struct bpfj_file_match_cached_key);
+  __type(value, struct bpfj_file_match_cached_entry);
+} bpfj_file_match_exact_cache SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, BPFJ_FILE_MATCH_CACHED_CHECKPOINT_SIZE);
+  __type(key, struct bpfj_file_match_cached_key);
+  __type(value, struct bpfj_file_match_cached_checkpoint);
+} bpfj_file_match_checkpoint_cache SEC(".maps");
+
+struct bpfj_file_match_cached_validation {
+  __u64 generation;
+  __u64 current;
+  __u64 bloom[2];
+  __u32 valid;
 };
 
-static __always_inline __u32
-bpfj_file_match_cached_entry_size(__u32 iter_count, __u32 dentry_count) {
-  return (__u32)sizeof(struct bpfj_file_match_cached_entry) +
-      dentry_count * (__u32)sizeof(uintptr_t) +
-      iter_count * (__u32)sizeof(struct bpfj_file_match_cached_iter);
-}
+struct bpfj_file_match_cached_validation_ctx {
+  struct bpfj_file_match_cached_validation* validation;
+  struct bpfj_file_match_cached_rename_journal* journal;
+};
 
-static __always_inline uintptr_t __arena* bpfj_file_match_cached_entry_dentries(
-    struct bpfj_file_match_cached_entry __arena* entry) {
-  return (uintptr_t __arena*)(entry + 1);
-}
-
-static __always_inline struct bpfj_file_match_cached_iter __arena*
-bpfj_file_match_cached_entry_iters(
-    struct bpfj_file_match_cached_entry __arena* entry) {
-  return (
-      struct
-      bpfj_file_match_cached_iter __arena*)(bpfj_file_match_cached_entry_dentries(
-                                                entry) +
-                                            entry->dentry_count);
-}
+struct bpfj_file_match_cached_native_scratch {
+  struct bpfj_file_match_cached_key key;
+  struct bpfj_file_match_cached_entry exact;
+  struct bpfj_file_match_cached_checkpoint checkpoint;
+  struct bpfj_file_match_cached_validation validation;
+};
 
 // Allocate a run state with its vectors initialized. __noinline so the
 // allocation and initialization sit in a frame of their own: every hook opens
@@ -341,7 +374,7 @@ static __noinline void __arena* bpfj_file_match_cached_state_alloc(void) {
   state->mount_cache = NULL;
   state->mount_descriptor.ns_ino = 0;
   state->mount_descriptor.namespace_addr = 0;
-  state->mount_descriptor.mount_lock = 0;
+  state->mount_descriptor.mount_generation = 0;
   state->mount_snapshot.buf = NULL;
   state->mount_snapshot.refcount = NULL;
   state->mount_fallback.parent_vfsmount = 0;
@@ -350,9 +383,15 @@ static __noinline void __arena* bpfj_file_match_cached_state_alloc(void) {
   state->walk_root = 0;
   state->walk_curr = 0;
   state->lookup_value = 0;
+  state->rename_generation = 0;
+  state->ancestry_bloom[0] = 0;
+  state->ancestry_bloom[1] = 0;
   state->retry_result = 0;
   state->component_result = 0;
+  state->walk_depth = 0;
+  state->checkpoint_depth = 0;
   state->completed_cycle = false;
+  state->has_pending_checkpoint = false;
   return state;
 }
 
@@ -373,9 +412,91 @@ static void bpfj_file_match_cached_state_free(
   *ptr = NULL;
 }
 
-// Cache generation advanced by an enrolled rename. The kernel rename seqcount
-// below still protects an individual path walk from racing a rename anywhere.
-volatile __u64 bpfj_file_match_cached_rename_counter = 0;
+static __always_inline void bpfj_file_match_cached_bloom_add(
+    __u64 __arena* bloom,
+    uintptr_t dentry) {
+  __u64 hash = bpfj_file_match_cached_bloom_hash(dentry);
+  bloom[(hash >> 6) & 1] |= 1ULL << (hash & 63);
+}
+
+static __always_inline bool bpfj_file_match_cached_bloom_contains(
+    __u64 bloom0,
+    __u64 bloom1,
+    uintptr_t dentry) {
+  __u64 hash = bpfj_file_match_cached_bloom_hash(dentry);
+  __u64 word = ((hash >> 6) & 1) == 0 ? bloom0 : bloom1;
+  return (word & (1ULL << (hash & 63))) != 0;
+}
+
+static long bpfj_file_match_cached_validate_generation_cb(
+    __u32 index,
+    void* data) {
+  struct bpfj_file_match_cached_validation_ctx* ctx = data;
+  struct bpfj_file_match_cached_validation* validation = ctx->validation;
+  if (!validation->valid) {
+    return 1;
+  }
+
+  __u64 expected = validation->generation + index + 1;
+  if (expected > validation->current) {
+    return 1;
+  }
+
+  struct bpfj_file_match_cached_rename_record* record =
+      &ctx->journal->records
+           [expected & (BPFJ_FILE_MATCH_CACHED_RENAME_JOURNAL_SIZE - 1)];
+  __u64 before = *(volatile __u64*)&record->generation;
+  barrier();
+  __u64 dentry = *(volatile __u64*)&record->dentry;
+  barrier();
+  __u64 after = *(volatile __u64*)&record->generation;
+  if (before != expected || after != before ||
+      bpfj_file_match_cached_bloom_contains(
+          validation->bloom[0], validation->bloom[1], dentry)) {
+    validation->valid = false;
+    return 1;
+  }
+  return 0;
+}
+
+// The checkpoint restore frame is on the verifier's deepest matcher path.
+// Keep the bounded journal scan in a bpf_loop callback and its state in task
+// storage, leaving only the callback context pointer on the BPF stack.
+static __always_inline bool bpfj_file_match_cached_generation_valid(
+    struct bpfj_file_match_cached_native_scratch* scratch,
+    __u64 generation,
+    __u64 bloom0,
+    __u64 bloom1) {
+  struct bpfj_file_match_cached_rename_journal* journal =
+      bpfj_file_match_cached_get_rename_journal();
+  if (journal == NULL) {
+    return false;
+  }
+  __u64 current = journal->generation;
+  if (generation == current) {
+    return true;
+  }
+  if (generation > current ||
+      current - generation > BPFJ_FILE_MATCH_CACHED_RENAME_JOURNAL_SIZE) {
+    return false;
+  }
+
+  scratch->validation.generation = generation;
+  scratch->validation.current = current;
+  scratch->validation.bloom[0] = bloom0;
+  scratch->validation.bloom[1] = bloom1;
+  scratch->validation.valid = true;
+  struct bpfj_file_match_cached_validation_ctx ctx = {
+      .validation = &scratch->validation,
+      .journal = journal,
+  };
+  bpf_loop(
+      BPFJ_FILE_MATCH_CACHED_RENAME_JOURNAL_SIZE,
+      bpfj_file_match_cached_validate_generation_cb,
+      &ctx,
+      0);
+  return scratch->validation.valid;
+}
 
 // __noinline for the same reason as bpfj_mount_seqcount: its BPF_CORE_READ
 // scratch would otherwise sit in file_match_cached's frame, which is on the
@@ -398,10 +519,7 @@ static __always_inline int bpfj_file_match_cached_process_nodes(
 
   if (has_nodes) {
     void __arena* base = (void __arena*)bpfj_heap_ctrl;
-    u32 hdr_off = (u32)state->lookup_value;
-    hdr_off = bpfj_heap_clamp_off(hdr_off);
-    // The inner header is read in place now that the lookup takes an arena
-    // pointer; it used to be copied field-wise onto the stack first.
+    u32 hdr_off = bpfj_heap_clamp_off((u32)state->lookup_value);
     __arena const struct bpfj_perf_map* inner_map =
         (__arena const struct bpfj_perf_map*)((char __arena*)base + hdr_off);
     __u32 count = bpfj_file_match_cached_count(state);
@@ -409,15 +527,11 @@ static __always_inline int bpfj_file_match_cached_process_nodes(
       if (i >= count) {
         break;
       }
-
       struct bpfj_file_match_cached_iter __arena* iter =
           bpfj_file_match_cached_iter_at(state, i);
       if (iter == NULL) {
         break;
       }
-      // Composed field-wise rather than copied: a struct copy out of arena
-      // memory loses the address space and the verifier rejects the load.
-      // Little-endian, so this is the same u64 the copy produced.
       u64 node_key =
           (u64)(__u32)iter->node.path_id | ((u64)(__u32)iter->node.pos << 32);
       if (bpfj_perf_map_lookup_arena(
@@ -447,38 +561,32 @@ static __always_inline int bpfj_file_match_cached_process_initializers(
     u32 elem_off = (u32)state->lookup_value + i * sizeof(s32);
     elem_off = bpfj_heap_clamp_off(elem_off);
     s32 path_id_val = *(__arena const s32*)((char __arena*)base + elem_off);
-    if (path_id_val < 0) {
+    if (path_id_val < 0 ||
+        bpfj_file_match_cached_count(state) >= BPFJ_FILE_MATCH_MAX_ITERS) {
       break;
     }
-
-    // Note: duplicate iters may be created for the same path_id when several
-    // component patterns trigger the same initializer. This trades iter slot
-    // efficiency for verifier complexity budget — the O(64*64) dedup scan was
-    // too expensive for the verifier.
-
-    // The cap is still enforced, just not by running out of array: every loop
-    // that walks the iters is bounded by it, so anything past it would be
-    // invisible to them.
-    if (bpfj_file_match_cached_count(state) >= BPFJ_FILE_MATCH_MAX_ITERS) {
-      break;
-    }
-
-    // emplace_back and not push_back: this is inside a bpf_for, and it is the
-    // one that brings no iterator of its own. It also replaces the scan for a
-    // tombstoned slot the fixed array needed -- appending is where the end is.
     struct bpfj_file_match_cached_iter __arena* mem =
         bpfj_vec_emplace_back(&state->iters);
     if (mem == NULL) {
       break;
     }
-
-    // Field-wise: a struct copy into arena memory drops the address space.
     mem->node.path_id = path_id_val;
     mem->node.pos = 0;
     mem->is_being_dropped = false;
     mem->was_matched_this_cycle = true;
   }
   return 0;
+}
+
+static __always_inline bool bpfj_file_match_cached_iter_complete(
+    struct bpfj_file_matcher __arena* matcher __arg_arena,
+    struct bpfj_file_match_cached_iter __arena* iter __arg_arena) {
+  s32 path_id = iter->node.path_id;
+  if (path_id < 0 || (__u32)path_id >= matcher->data_entry_count ||
+      matcher->path_depths == NULL) {
+    return false;
+  }
+  return (__u32)iter->node.pos >= matcher->path_depths[path_id];
 }
 
 // Process node matching and initializer logic for one matched component
@@ -488,7 +596,8 @@ static __always_inline int bpfj_file_match_cached_process_initializers(
 static __always_inline int bpfj_file_match_cached_process_indexes(
     struct bpfj_file_matcher __arena* matcher __arg_arena,
     struct bpfj_file_match_cached_state __arena* state __arg_arena,
-    __u64 packed_indexes) {
+    __u64 packed_indexes,
+    bool allow_initializers) {
   struct bpfj_file_match_indexes indexes;
   __builtin_memcpy(&indexes, &packed_indexes, sizeof(indexes));
   if (indexes.nodes_id < 0) {
@@ -496,7 +605,7 @@ static __always_inline int bpfj_file_match_cached_process_indexes(
   }
 
   bpfj_file_match_cached_process_nodes(matcher, state, indexes.nodes_id);
-  if (indexes.initializer_nodes_id >= 0) {
+  if (allow_initializers && indexes.initializer_nodes_id >= 0) {
     bpfj_file_match_cached_process_initializers(
         matcher, state, indexes.initializer_nodes_id);
   }
@@ -548,13 +657,10 @@ static __always_inline long bpfj_file_match_cached_purge(
   return 0;
 }
 
-// Finalize iters after all matching for a dentry step: an iter that matched the
-// current component advances to the next position; one that did not is marked
-// for purging. was_matched_this_cycle is reset so iters must re-match on the
-// next dentry step or be dropped. The root dentry (which may carry a non-path
-// name like a btrfs subvol ID) is skipped at the top of the walk loop so iters
-// are never tested against it.
+// Finalize iters after all matching for a dentry step: a matched iter advances,
+// a completed ancestor remains available, and an unfinished miss is purged.
 static __always_inline long bpfj_file_match_cached_finalize(
+    struct bpfj_file_matcher __arena* matcher __arg_arena,
     struct bpfj_file_match_cached_state __arena* state __arg_arena) {
   __u32 count = bpfj_file_match_cached_count(state);
   u32 i = 0;
@@ -572,7 +678,7 @@ static __always_inline long bpfj_file_match_cached_finalize(
     if (iter->was_matched_this_cycle) {
       iter->node.pos += 1;
       iter->is_being_dropped = false;
-    } else {
+    } else if (!bpfj_file_match_cached_iter_complete(matcher, iter)) {
       iter->is_being_dropped = true;
     }
     iter->was_matched_this_cycle = false;
@@ -583,27 +689,35 @@ static __always_inline long bpfj_file_match_cached_finalize(
 
 // Finalize pod masks then purge dead iters. Called once per dentry step.
 static __always_inline long bpfj_file_match_cached_finalize_and_purge(
-    struct bpfj_file_match_cached_state __arena* state __arg_arena,
-    uintptr_t dentry) {
-  bpfj_file_match_cached_finalize(state);
-
-  // The walk step index used to be the slot index; appending makes them the
-  // same thing, and the vec's size is the depth.
-  if (bpfj_vec_size(&state->saved_dentries) <
-      BPFJ_FILE_MATCH_CACHED_MAX_SAVED_DENTRIES) {
-    uintptr_t __arena* slot = bpfj_vec_emplace_back(&state->saved_dentries);
-    if (slot != NULL) {
-      *slot = dentry;
-    }
-  }
-
+    struct bpfj_file_match_cached_state __arena* state __arg_arena) {
+  bpfj_file_match_cached_finalize(state->matcher, state);
   bpfj_file_match_cached_purge(state);
 
   return 0;
 }
 
+static __always_inline long bpfj_file_match_cached_purge_incomplete(
+    struct bpfj_file_match_cached_state __arena* state __arg_arena) {
+  __u32 count = bpfj_file_match_cached_count(state);
+  u32 i = 0;
+  bpf_for(i, 0, BPFJ_FILE_MATCH_MAX_ITERS) {
+    if (i >= count) {
+      break;
+    }
+    struct bpfj_file_match_cached_iter __arena* iter =
+        bpfj_file_match_cached_iter_at(state, i);
+    if (iter == NULL) {
+      break;
+    }
+    iter->is_being_dropped =
+        !bpfj_file_match_cached_iter_complete(state->matcher, iter);
+  }
+  return bpfj_file_match_cached_purge(state);
+}
+
 struct bpfj_file_match_cached_process_ctx {
   struct bpfj_file_match_cached_state __arena* state;
+  bool allow_initializers;
 };
 
 // Keep the glob result walk outside the matcher call chain. A numeric iterator
@@ -618,8 +732,8 @@ static long bpfj_file_match_cached_process_cb(__u32 index, void* data) {
     return 1;
   }
 
-  state->component_result =
-      bpfj_file_match_cached_process_indexes(state->matcher, state, *result);
+  state->component_result = bpfj_file_match_cached_process_indexes(
+      state->matcher, state, *result, ctx->allow_initializers);
   return state->component_result < 0;
 }
 
@@ -634,7 +748,8 @@ static long bpfj_file_match_cached_process_cb(__u32 index, void* data) {
 static __always_inline long bpfj_file_match_cached_nodes(
     struct bpfj_file_match_cached_state __arena* state __arg_arena,
     struct bpfj_file_match_name __arena* name __arg_arena,
-    long size) {
+    long size,
+    bool allow_initializers) {
   u64 len = size - 1; // Drop null term
   if (len > BPFJ_FILE_MATCH_NAME_LEN) {
     len = BPFJ_FILE_MATCH_NAME_LEN;
@@ -647,6 +762,7 @@ static __always_inline long bpfj_file_match_cached_nodes(
 
   struct bpfj_file_match_cached_process_ctx ctx = {
       .state = state,
+      .allow_initializers = allow_initializers,
   };
   state->component_result = 0;
   bpf_loop((u32)n, bpfj_file_match_cached_process_cb, &ctx, 0);
@@ -857,9 +973,13 @@ long bpfj_file_match_cached_init(
   bpfj_shared_ptr_release_arena(&state->mount_snapshot);
   state->mount_descriptor.ns_ino = 0;
   state->mount_descriptor.namespace_addr = 0;
-  state->mount_descriptor.mount_lock = 0;
+  state->mount_descriptor.mount_generation = 0;
   state->mount_fallback.parent_vfsmount = 0;
   state->mount_fallback.mountpoint = 0;
+  state->rename_generation = 0;
+  state->ancestry_bloom[0] = 0;
+  state->ancestry_bloom[1] = 0;
+  state->has_pending_checkpoint = false;
 
   BPFJ_DBG_LOG("file_match_cached: Initialized");
 
@@ -964,19 +1084,23 @@ static u64 bpfj_file_match_cached_subvol(struct inode* inode) {
   return BPF_CORE_READ(root, root_key.objectid);
 }
 
-long bpfj_file_match_cached_build_key(
+long bpfj_file_match_cached_build_key_for_dentry(
     struct bpfj_file_match_cached_key __arena* key __arg_arena,
-    struct bpfj_file_match_cached_state __arena* state __arg_arena) {
+    struct bpfj_file_match_cached_state __arena* state __arg_arena,
+    uintptr_t dentry) {
   // Field-wise: a memset of arena memory drops the address space. The key is
   // hashed as raw words, so every byte is explicitly initialized.
   key->ino = 0;
   key->subvol = 0;
   bpfj_heap_copy_arena(&key->uuid, &state->uuid, sizeof(key->uuid));
-  key->rename_counter = bpfj_file_match_cached_rename_counter;
+  key->matcher = state->matcher->cache_cookie;
   key->dev = 0;
-  key->mount_lock = bpfj_mount_seqcount();
-
-  struct dentry* dentry = state->leaf;
+  key->reserved = 0;
+  if (state->mount_descriptor.namespace_addr != 0) {
+    key->mount_generation = state->mount_descriptor.mount_generation;
+  } else {
+    key->mount_generation = bpfj_mount_root_generation();
+  }
 
   // TODO: remove BPF_CORE_READ
   key->dev = BPF_CORE_READ((struct dentry*)dentry, d_sb, s_dev);
@@ -985,6 +1109,13 @@ long bpfj_file_match_cached_build_key(
       BPF_CORE_READ((struct dentry*)dentry, d_inode));
 
   return 0;
+}
+
+static __always_inline long bpfj_file_match_cached_build_key(
+    struct bpfj_file_match_cached_key __arena* key,
+    struct bpfj_file_match_cached_state __arena* state) {
+  return bpfj_file_match_cached_build_key_for_dentry(
+      key, state, (uintptr_t)state->leaf);
 }
 
 // GLOBAL (__noinline), and deliberately not inlined into either caller: the
@@ -1025,26 +1156,34 @@ long bpfj_file_match_cached_check_file_cache(
     return -ENOENT;
   }
 
-  BPFJ_HEAP_ALLOC_GUARD(struct bpfj_file_match_cached_key, key);
-  if (!key) {
-    return -ENOMEM;
+  struct bpfj_file_match_cached_key __arena* key = &state->cache_key;
+  long ret = bpfj_file_match_cached_build_key(key, state);
+  if (ret < 0) {
+    return ret;
   }
-
-  bpfj_file_match_cached_build_key(key, state);
 
   if (bpfj_dbg_mode) {
     bpfj_file_match_cached_log_key(key, false);
   }
 
-  BPFJ_DYN_LRU_LOOKUP_GUARD(cached_results_ptr);
-  long ret = BPFJ_DYN_LRU_LOOKUP(
-      cached_results_ptr, state->matcher->lru, (u64 __arena*)key);
-  if (ret < 0) {
-    __sync_fetch_and_add(&bpfj_file_match_cached_cache_miss_counter, 1);
-    return ret;
+  BPFJ_SCRATCH_GUARD(struct bpfj_file_match_cached_native_scratch, scratch);
+  if (scratch == NULL) {
+    return -ENOMEM;
   }
-
-  struct bpfj_file_match_cached_entry __arena* entry = cached_results_ptr.buf;
+  long result = -ENOENT;
+  bpfj_heap_read_arena(&scratch->key, sizeof(scratch->key), key);
+  struct bpfj_file_match_cached_entry* live_entry =
+      bpf_map_lookup_elem(&bpfj_file_match_exact_cache, &scratch->key);
+  if (live_entry == NULL) {
+    volatile __u64* stats = bpfj_file_match_cached_stats_for_cpu();
+    __sync_fetch_and_add(&stats[BPFJ_FILE_MATCH_CACHED_STAT_MISS], 1);
+    goto out;
+  }
+  if (bpf_probe_read_kernel(
+          &scratch->exact, sizeof(scratch->exact), live_entry) != 0) {
+    goto out;
+  }
+  struct bpfj_file_match_cached_entry* entry = &scratch->exact;
 
   __u32 iter_count = entry->iter_count;
   __u32 dentry_count = entry->dentry_count;
@@ -1053,32 +1192,69 @@ long bpfj_file_match_cached_check_file_cache(
     // Counts come back out of the arena, and every loop that walks these is
     // bounded by the caps, so an entry claiming more than that would be read
     // short. Treat it as a miss rather than as a partial answer.
-    __sync_fetch_and_add(&bpfj_file_match_cached_cache_miss_counter, 1);
-    return -ENOENT;
+    volatile __u64* stats = bpfj_file_match_cached_stats_for_cpu();
+    __sync_fetch_and_add(&stats[BPFJ_FILE_MATCH_CACHED_STAT_INVALID], 1);
+    bpf_map_delete_elem(&bpfj_file_match_exact_cache, &scratch->key);
+    goto out;
+  }
+  if (!bpfj_file_match_cached_generation_valid(
+          scratch,
+          entry->rename_generation,
+          entry->ancestry_bloom[0],
+          entry->ancestry_bloom[1])) {
+    volatile __u64* stats = bpfj_file_match_cached_stats_for_cpu();
+    __sync_fetch_and_add(&stats[BPFJ_FILE_MATCH_CACHED_STAT_INVALID], 1);
+    bpf_map_delete_elem(&bpfj_file_match_exact_cache, &scratch->key);
+    goto out;
+  }
+  __u64 mount_generation = bpfj_mount_root_generation();
+  if (scratch->key.mount_generation != mount_generation) {
+    result = -EBUSY;
+    goto out;
   }
 
   BPFJ_DBG_LOG("file_match_cached: Cache hit: %p", entry);
-  __sync_fetch_and_add(&bpfj_file_match_cached_cache_hit_counter, 1);
+  volatile __u64* stats = bpfj_file_match_cached_stats_for_cpu();
+  __sync_fetch_and_add(&stats[BPFJ_FILE_MATCH_CACHED_STAT_HIT], 1);
 
   // Only the walk's output. This used to copy the whole run state over itself,
   // which also replaced the matcher, uuid and variable bindings that bind had
   // just put there -- harmless only because the entry was keyed by the uuid
   // whose state it was. Restoring the two vecs leaves the inputs alone.
-  long res = bpfj_vec_assign(
-      &state->saved_dentries,
-      bpfj_file_match_cached_entry_dentries(entry),
-      dentry_count);
-  if (res < 0) {
-    return res;
+  bpfj_vec_clear(&state->saved_dentries);
+  bpfj_vec_clear(&state->iters);
+  u32 i = 0;
+  bpf_for(i, 0, BPFJ_FILE_MATCH_CACHED_MAX_SAVED_DENTRIES) {
+    if (i >= dentry_count) {
+      break;
+    }
+    uintptr_t __arena* dentry = bpfj_vec_emplace_back(&state->saved_dentries);
+    if (dentry == NULL) {
+      result = -ENOMEM;
+      goto out;
+    }
+    *dentry = entry->dentries[i];
+  }
+  bpf_for(i, 0, BPFJ_FILE_MATCH_MAX_ITERS) {
+    if (i >= iter_count) {
+      break;
+    }
+    struct bpfj_file_match_cached_iter __arena* iter =
+        bpfj_vec_emplace_back(&state->iters);
+    if (iter == NULL) {
+      result = -ENOMEM;
+      goto out;
+    }
+    iter->node.path_id = entry->nodes[i].path_id;
+    iter->node.pos = entry->nodes[i].pos;
+    iter->is_being_dropped = false;
+    iter->was_matched_this_cycle = false;
   }
 
-  res = bpfj_vec_assign(
-      &state->iters, bpfj_file_match_cached_entry_iters(entry), iter_count);
-  if (res < 0) {
-    return res;
-  }
+  result = (long)iter_count;
 
-  return (long)iter_count;
+out:
+  return result;
 }
 
 // The LRU insertion path is the deepest cached-matcher branch. Inline this
@@ -1089,12 +1265,11 @@ static __always_inline long bpfj_file_match_cached_save_file_cache(
     return 0;
   }
 
-  BPFJ_HEAP_ALLOC_GUARD(struct bpfj_file_match_cached_key, key);
-  if (!key) {
-    return -ENOMEM;
+  struct bpfj_file_match_cached_key __arena* key = &state->cache_key;
+  long ret = bpfj_file_match_cached_build_key(key, state);
+  if (ret < 0) {
+    return ret;
   }
-
-  bpfj_file_match_cached_build_key(key, state);
 
   if (bpfj_dbg_mode) {
     bpfj_file_match_cached_log_key(key, true);
@@ -1102,36 +1277,62 @@ static __always_inline long bpfj_file_match_cached_save_file_cache(
 
   __u32 iter_count = bpfj_file_match_cached_count(state);
   __u32 dentry_count = bpfj_vec_size(&state->saved_dentries);
+  if (dentry_count > BPFJ_FILE_MATCH_CACHED_MAX_SAVED_DENTRIES) {
+    return 0;
+  }
 
-  struct bpfj_shared_ptr cached_sp = bpfj_shared_ptr_make(
-      bpfj_file_match_cached_entry_size(iter_count, dentry_count));
-  if (!bpfj_shared_ptr_valid(cached_sp)) {
+  BPFJ_SCRATCH_GUARD(struct bpfj_file_match_cached_native_scratch, scratch);
+  if (scratch == NULL) {
     return -ENOMEM;
   }
-  struct bpfj_file_match_cached_entry __arena* cached = cached_sp.buf;
+  bpfj_heap_read_arena(&scratch->key, sizeof(scratch->key), key);
+  struct bpfj_file_match_cached_entry* cached = &scratch->exact;
 
+  cached->rename_generation = state->rename_generation;
+  cached->ancestry_bloom[0] = state->ancestry_bloom[0];
+  cached->ancestry_bloom[1] = state->ancestry_bloom[1];
   cached->iter_count = iter_count;
   cached->dentry_count = dentry_count;
-  if (dentry_count != 0) {
-    bpfj_heap_copy_arena(
-        bpfj_file_match_cached_entry_dentries(cached),
-        state->saved_dentries.buf,
-        dentry_count * (__u32)sizeof(uintptr_t));
+  u32 i = 0;
+  bpf_for(i, 0, BPFJ_FILE_MATCH_CACHED_MAX_SAVED_DENTRIES) {
+    if (i >= dentry_count) {
+      break;
+    }
+    uintptr_t __arena* dentry = bpfj_vec_at(&state->saved_dentries, i);
+    if (dentry == NULL) {
+      break;
+    }
+    cached->dentries[i] = *dentry;
   }
-  if (iter_count != 0) {
-    bpfj_heap_copy_arena(
-        bpfj_file_match_cached_entry_iters(cached),
-        state->iters.buf,
-        iter_count * (__u32)sizeof(struct bpfj_file_match_cached_iter));
+  bpf_for(i, 0, BPFJ_FILE_MATCH_MAX_ITERS) {
+    if (i >= iter_count) {
+      break;
+    }
+    struct bpfj_file_match_cached_iter __arena* iter =
+        bpfj_file_match_cached_iter_at(state, i);
+    if (iter == NULL) {
+      break;
+    }
+    cached->nodes[i].path_id = iter->node.path_id;
+    cached->nodes[i].pos = iter->node.pos;
   }
 
-  // The LRU takes ownership whether insertion succeeds or fails. A concurrent
-  // writer may replace this value; that is fine because this is only a cache.
-  return bpfj_dyn_lru_insert_owned(
-      state->matcher->lru,
-      (u64 __arena*)key,
-      cached_sp.buf,
-      cached_sp.refcount);
+  // Entries are immutable after publication. Preserve an answer another CPU
+  // published while this CPU walked the path.
+  long update_ret = bpf_map_update_elem(
+      &bpfj_file_match_exact_cache, &scratch->key, cached, BPF_NOEXIST);
+  if (update_ret < 0) {
+    volatile __u64* stats = bpfj_file_match_cached_stats_for_cpu();
+    if (update_ret == -EEXIST) {
+      __sync_fetch_and_add(
+          &stats[BPFJ_FILE_MATCH_CACHED_STAT_INSERT_EXISTS], 1);
+    } else if (update_ret == -EBUSY) {
+      __sync_fetch_and_add(&stats[BPFJ_FILE_MATCH_CACHED_STAT_INSERT_BUSY], 1);
+    } else {
+      __sync_fetch_and_add(&stats[BPFJ_FILE_MATCH_CACHED_STAT_INSERT_ERROR], 1);
+    }
+  }
+  return update_ret;
 }
 
 struct bpfj_file_match_cached_save_ctx {
@@ -1143,11 +1344,41 @@ static long bpfj_file_match_cached_save_file_cache_cb(
     void* data) {
   (void)unused;
   struct bpfj_file_match_cached_save_ctx* ctx = data;
-  bpfj_file_match_cached_save_file_cache(ctx->state);
+  struct bpfj_file_match_cached_state __arena* state = ctx->state;
+  struct bpfj_file_match_cached_rename_journal* journal =
+      bpfj_file_match_cached_get_rename_journal();
+  if (journal == NULL) {
+    return 1;
+  }
+  state->rename_generation = journal->generation;
+  if (state->walk_lock.rename_lock !=
+      bpfj_file_match_cached_rename_seqcount()) {
+    return 1;
+  }
+  if (state->has_pending_checkpoint) {
+    BPFJ_SCRATCH_GUARD(struct bpfj_file_match_cached_native_scratch, scratch);
+    if (scratch != NULL) {
+      state->pending_checkpoint.rename_generation = state->rename_generation;
+      bpfj_heap_read_arena(
+          &scratch->key, sizeof(scratch->key), &state->checkpoint_key);
+      bpfj_heap_read_arena(
+          &scratch->checkpoint,
+          sizeof(scratch->checkpoint),
+          &state->pending_checkpoint);
+      bpf_map_update_elem(
+          &bpfj_file_match_checkpoint_cache,
+          &scratch->key,
+          &scratch->checkpoint,
+          BPF_NOEXIST);
+    }
+  }
+  bpfj_file_match_cached_save_file_cache(state);
   return 1;
 }
 
-static __always_inline long bpfj_file_match_cached_dbg_print(
+// Keep debug formatting and its bounded iterator off the verifier-limited
+// matcher path. This runs only after the match has completed.
+static __noinline long bpfj_file_match_cached_dbg_print(
     struct bpfj_file_matcher __arena* matcher __arg_arena,
     struct bpfj_file_match_cached_state __arena* state __arg_arena) {
   __u32 count = bpfj_file_match_cached_count(state);
@@ -1269,6 +1500,136 @@ static __always_inline long bpfj_file_match_cached_get_walked_path(
   return 0;
 }
 
+static __noinline long bpfj_file_match_cached_restore_checkpoint_nodes(
+    struct bpfj_file_match_cached_state __arena* state __arg_arena,
+    struct bpfj_file_match_cached_checkpoint* checkpoint) {
+  bpfj_vec_clear(&state->iters);
+  __u32 count = checkpoint->iter_count;
+  u32 j = 0;
+  bpf_for(j, 0, BPFJ_FILE_MATCH_CACHED_MAX_CHECKPOINT_ITERS) {
+    if (j >= count) {
+      break;
+    }
+    struct bpfj_file_match_cached_iter __arena* iter =
+        bpfj_vec_emplace_back(&state->iters);
+    if (iter == NULL) {
+      return -ENOMEM;
+    }
+    iter->node.path_id = checkpoint->nodes[j].path_id;
+    iter->node.pos = checkpoint->nodes[j].pos;
+    iter->is_being_dropped = false;
+    iter->was_matched_this_cycle = false;
+  }
+  return 0;
+}
+
+static __noinline long bpfj_file_match_cached_restore_checkpoint(
+    struct bpfj_file_match_cached_state __arena* state __arg_arena) {
+  if (!bpfj_file_match_cached_caches(state)) {
+    return 0;
+  }
+  BPFJ_SCRATCH_GUARD(struct bpfj_file_match_cached_native_scratch, scratch);
+  if (scratch == NULL) {
+    return 0;
+  }
+
+  __u32 depth = bpfj_vec_size(&state->saved_dentries);
+  u32 i = 0;
+  bpf_for(i, 0, BPFJ_FILE_MATCH_CACHED_MAX_RECURSION) {
+    if (i >= depth) {
+      break;
+    }
+    uintptr_t __arena* saved = bpfj_vec_at(&state->saved_dentries, i);
+    if (saved == NULL || !bpfj_file_match_cached_is_dir(*saved)) {
+      continue;
+    }
+
+    struct bpfj_file_match_cached_key __arena* key = &state->cache_key;
+    long ret = bpfj_file_match_cached_build_key_for_dentry(key, state, *saved);
+    if (ret < 0) {
+      return ret;
+    }
+    bpfj_heap_read_arena(&scratch->key, sizeof(scratch->key), key);
+    struct bpfj_file_match_cached_checkpoint* live_checkpoint =
+        bpf_map_lookup_elem(&bpfj_file_match_checkpoint_cache, &scratch->key);
+    if (live_checkpoint == NULL) {
+      continue;
+    }
+    if (bpf_probe_read_kernel(
+            &scratch->checkpoint,
+            sizeof(scratch->checkpoint),
+            live_checkpoint) != 0) {
+      continue;
+    }
+    struct bpfj_file_match_cached_checkpoint* checkpoint = &scratch->checkpoint;
+    if (checkpoint->iter_count > BPFJ_FILE_MATCH_CACHED_MAX_CHECKPOINT_ITERS ||
+        !bpfj_file_match_cached_generation_valid(
+            scratch,
+            checkpoint->rename_generation,
+            checkpoint->ancestry_bloom[0],
+            checkpoint->ancestry_bloom[1])) {
+      bpf_map_delete_elem(&bpfj_file_match_checkpoint_cache, &scratch->key);
+      continue;
+    }
+
+    long restore_ret =
+        bpfj_file_match_cached_restore_checkpoint_nodes(state, checkpoint);
+    if (restore_ret < 0) {
+      return restore_ret;
+    }
+    state->rename_generation = checkpoint->rename_generation;
+    state->ancestry_bloom[0] = checkpoint->ancestry_bloom[0];
+    state->ancestry_bloom[1] = checkpoint->ancestry_bloom[1];
+    return (long)(depth - i);
+  }
+  return 0;
+}
+
+// Stage the most recently matched directory frontier in arena memory.
+// Publication happens only after the rename and mount sequence counters are
+// stable, avoiding both inconsistent entries and one LRU update per component.
+static __noinline long bpfj_file_match_cached_stage_checkpoint(
+    struct bpfj_file_match_cached_state __arena* state __arg_arena,
+    uintptr_t dentry) {
+  if (!bpfj_file_match_cached_caches(state) ||
+      !bpfj_file_match_cached_is_dir(dentry)) {
+    return 0;
+  }
+
+  __u32 count = bpfj_file_match_cached_count(state);
+  if (count > BPFJ_FILE_MATCH_CACHED_MAX_CHECKPOINT_ITERS) {
+    return 0;
+  }
+  struct bpfj_file_match_cached_checkpoint __arena* checkpoint =
+      &state->pending_checkpoint;
+  checkpoint->rename_generation = state->rename_generation;
+  checkpoint->ancestry_bloom[0] = state->ancestry_bloom[0];
+  checkpoint->ancestry_bloom[1] = state->ancestry_bloom[1];
+  checkpoint->iter_count = count;
+  checkpoint->reserved = 0;
+  u32 i = 0;
+  bpf_for(i, 0, BPFJ_FILE_MATCH_CACHED_MAX_CHECKPOINT_ITERS) {
+    if (i >= count) {
+      break;
+    }
+    struct bpfj_file_match_cached_iter __arena* iter =
+        bpfj_file_match_cached_iter_at(state, i);
+    if (iter == NULL) {
+      return 0;
+    }
+    checkpoint->nodes[i].path_id = iter->node.path_id;
+    checkpoint->nodes[i].pos = iter->node.pos;
+  }
+
+  struct bpfj_file_match_cached_key __arena* key = &state->checkpoint_key;
+  long ret = bpfj_file_match_cached_build_key_for_dentry(key, state, dentry);
+  if (ret < 0) {
+    return ret;
+  }
+  state->has_pending_checkpoint = true;
+  return 0;
+}
+
 static __always_inline long file_match_cached_internal_loop(
     struct bpfj_file_match_cached_state __arena* state __arg_arena) {
   state->walk_curr = (uintptr_t)state->leaf;
@@ -1285,8 +1646,6 @@ static __always_inline long file_match_cached_internal_loop(
     // namespace may have several whole-filesystem mounts stacked at `/`, so a
     // mount transition can yield another such dentry before reaching `root`.
     // Resolve through it without feeding an empty component to the matcher.
-    // Land our arena field in a scalar before BPF_CORE_READ; otherwise CO-RE
-    // tries to relocate walk_curr as though it were a kernel-struct member.
     uintptr_t curr = state->walk_curr;
     struct dentry* curr_parent = BPF_CORE_READ((struct dentry*)curr, d_parent);
     if ((uintptr_t)curr_parent == curr) {
@@ -1308,23 +1667,13 @@ static __always_inline long file_match_cached_internal_loop(
       continue;
     }
 
-    long ret = bpfj_file_match_cached_save_name(&state->name, state->walk_curr);
-    if (ret < 0) {
-      return ret;
+    uintptr_t __arena* saved = bpfj_vec_emplace_back(&state->saved_dentries);
+    if (saved == NULL) {
+      return -ENOMEM;
     }
+    *saved = state->walk_curr;
 
-    // Propagated, not discarded. A component whose glob lookup failed
-    // contributes no matches, and swallowing that here would let the walk carry
-    // on and hand an under-populated match set to an allow/deny decision as if
-    // it were a genuine set of misses.
-    ret = bpfj_file_match_cached_nodes(state, &state->name, ret);
-    if (ret < 0) {
-      return ret;
-    }
-
-    bpfj_file_match_cached_finalize_and_purge(state, state->walk_curr);
-
-    ret = bpfj_file_match_cached_move_up(
+    long ret = bpfj_file_match_cached_move_up(
         state, state->walk_curr, state->walk_root);
     if (ret < 0) {
       return ret;
@@ -1338,7 +1687,6 @@ static __always_inline long file_match_cached_internal_loop(
       state->walk_curr = 0;
       break;
     }
-
     state->walk_curr = state->walk_next;
   }
 
@@ -1349,16 +1697,53 @@ static __always_inline long file_match_cached_internal_loop(
     return 0;
   }
 
-  // Add an explicit `/` policy only after reaching the selected namespace
-  // root, without finalizing the existing iterators: those are the
-  // more-specific matches completed by the child immediately below the root
-  // and must remain available for precedence. Do not glob-match an empty name:
-  // an unbound variable also resolves to empty and must match nothing.
+  // The kernel walk discovers dentries leaf first. Run the matcher over the
+  // collected path in the opposite direction. This restores reusable
+  // directory frontier state before processing descendants.
+  state->walk_depth = bpfj_vec_size(&state->saved_dentries);
+  state->component_result = bpfj_file_match_cached_restore_checkpoint(state);
+  if (state->component_result < 0) {
+    return state->component_result;
+  }
+  state->checkpoint_depth = (__u32)state->component_result;
+  bpf_for(i, 0, BPFJ_FILE_MATCH_CACHED_MAX_RECURSION) {
+    if (i < state->checkpoint_depth) {
+      continue;
+    }
+    if (i >= state->walk_depth) {
+      break;
+    }
+    uintptr_t __arena* saved =
+        bpfj_vec_at(&state->saved_dentries, state->walk_depth - i - 1);
+    if (saved == NULL) {
+      return -ENOMEM;
+    }
+    state->walk_curr = *saved;
+    if (bpfj_file_match_cached_caches(state)) {
+      bpfj_file_match_cached_bloom_add(state->ancestry_bloom, state->walk_curr);
+    }
+    long ret = bpfj_file_match_cached_save_name(&state->name, state->walk_curr);
+    if (ret < 0) {
+      return ret;
+    }
+    ret = bpfj_file_match_cached_nodes(state, &state->name, ret, i == 0);
+    if (ret < 0) {
+      return ret;
+    }
+    bpfj_file_match_cached_finalize_and_purge(state);
+    bpfj_file_match_cached_stage_checkpoint(state, state->walk_curr);
+  }
+
+  // Discard policy paths that only matched a prefix of the requested path.
+  bpfj_file_match_cached_purge_incomplete(state);
+
+  // Add an explicit `/` policy at the selected namespace root without letting
+  // an unbound variable glob-match the empty name.
   if (state->matcher->has_root == 0) {
     return 0;
   }
   return bpfj_file_match_cached_process_indexes(
-      state->matcher, state, state->matcher->root_indexes);
+      state->matcher, state, state->matcher->root_indexes, true);
 }
 
 struct bpfj_file_match_cached_retry_ctx {
@@ -1380,6 +1765,7 @@ static long bpfj_file_match_cached_retry_cb(__u32 unused, void* data) {
     state->retry_result = ret;
     return 1;
   }
+  state->walk_lock.mount_generation = state->mount_descriptor.mount_generation;
 
   ret = file_match_cached_internal_loop(state);
   if (ret == -EBUSY) {
@@ -1391,19 +1777,22 @@ static long bpfj_file_match_cached_retry_cb(__u32 unused, void* data) {
   }
 
   u32 rename_lock = bpfj_file_match_cached_rename_seqcount();
-  u32 mount_lock = bpfj_mount_seqcount();
+  __u64 mount_generation = bpfj_mount_root_generation();
   if (state->walk_lock.rename_lock == rename_lock &&
-      state->walk_lock.mount_lock == mount_lock) {
+      state->walk_lock.mount_generation == mount_generation) {
     state->retry_result = 0;
     state->completed_cycle = true;
     return 1;
   }
   state->walk_lock.rename_lock = rename_lock;
-  state->walk_lock.mount_lock = mount_lock;
   return 0;
 }
 
-__noinline long file_match_cached(
+#ifdef BPFJ_FILE_MATCH_CACHED_INLINE_RUN
+static __always_inline long bpfj_fmc_run(
+#else
+__noinline long bpfj_fmc_run(
+#endif
     struct bpfj_file_matcher __arena* matcher __arg_arena,
     struct bpfj_file_match_cached_state __arena* state __arg_arena,
     struct bpfj_mount_cache __arena* mount_cache __arg_arena) {
@@ -1432,7 +1821,6 @@ __noinline long file_match_cached(
   }
 
   state->walk_lock.rename_lock = bpfj_file_match_cached_rename_seqcount();
-  state->walk_lock.mount_lock = bpfj_mount_seqcount();
 
   // One run state for the whole walk, not one per path component. The heap lock
   // is a trylock that never waits, so a per-component allocation turns heap
@@ -1455,10 +1843,11 @@ __noinline long file_match_cached(
     return state->retry_result;
   }
 
-  if (cacheable) {
+  if (bpfj_file_match_cached_caches(state) &&
+      (state->has_pending_checkpoint || cacheable)) {
     // The matcher walk already reaches the verifier's call-frame limit. Run
-    // cache publication as a one-shot callback so its LRU and heap call graph
-    // is verified independently of the walk's call graph.
+    // cache and checkpoint publication as a one-shot callback so their LRU and
+    // heap call graphs are verified independently of the walk's call graph.
     struct bpfj_file_match_cached_save_ctx save_ctx = {.state = state};
     bpf_loop(1, bpfj_file_match_cached_save_file_cache_cb, &save_ctx, 0);
   }

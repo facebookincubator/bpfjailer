@@ -19,8 +19,7 @@
 #define MS_MOVE 8192
 #define BPFJ_REMOUNT_RELAY_NS (100ULL * 1000 * 1000)
 
-struct bpfj_dyn_lru __arena* bpfj_mount_match_lru;
-struct bpfj_mount_cache __arena bpfj_mount_cache;
+struct bpfj_mount_cache __arena* bpfj_mount_cache;
 
 struct bpfj_remount_relay {
   __u64 sb;
@@ -70,7 +69,6 @@ __noinline long bpfj_mount_best_match(
     long count) {
   __s32 best_pos = -1;
   __u8 best_specificity = 0;
-  struct bpfj_mount_path_entry* best = NULL;
   long best_index = -1;
   __u32 i;
   bpf_for(i, 0, BPFJ_FILE_MATCH_MAX_ITERS) {
@@ -89,7 +87,6 @@ __noinline long bpfj_mount_best_match(
          !entry->types)) {
       best_pos = pos;
       best_specificity = entry->specificity;
-      best = entry;
       best_index = i;
     }
   }
@@ -150,11 +147,9 @@ static __noinline bool bpfj_umount_match_allowed(
   return best && best->allowed;
 }
 
-// The pod loop is deliberately ordinary: file_match_cached uses bpf_for,
-// whose iterator state must not be nested.
 static __always_inline int bpfj_mount_enforce_path(
     uintptr_t dentry,
-    const char* type) {
+    uintptr_t type) {
   struct task_struct* task = bpf_get_current_task_btf();
   struct bpfj_pid_data* pid_data = bpfj_get_current_pid_data();
   if (!task || !pid_data || !dentry) {
@@ -169,7 +164,8 @@ static __always_inline int bpfj_mount_enforce_path(
   }
   __builtin_memset(scratch->type, 0, sizeof(scratch->type));
   scratch->has_type = type &&
-      bpf_probe_read_kernel_str(scratch->type, sizeof(scratch->type), type) > 0;
+      bpf_probe_read_kernel_str(
+          scratch->type, sizeof(scratch->type), (const void*)type) > 0;
 
   BPFJ_FILE_MATCH_CACHED_ALLOC(state);
   if (!state) {
@@ -206,7 +202,7 @@ static __always_inline int bpfj_mount_enforce_path(
     const long count = BPFJ_FILE_MATCH_CACHED(
         state,
         matcher,
-        &bpfj_mount_cache,
+        bpfj_mount_cache,
         dentry,
         &scratch->uuid,
         bpfj_file_match_cached_bind_var_array,
@@ -266,9 +262,15 @@ static __always_inline int bpfj_mount_enforce_any(
   return 0;
 }
 
+enum bpfj_umount_operation {
+  BPFJ_UMOUNT_OPERATION_UMOUNT,
+  BPFJ_UMOUNT_OPERATION_MOVE,
+  BPFJ_UMOUNT_OPERATION_PIVOT,
+};
+
 static __always_inline int bpfj_mount_enforce_umount_path(
     uintptr_t dentry,
-    const char* operation) {
+    enum bpfj_umount_operation operation_id) {
   if (!dentry) {
     return 0;
   }
@@ -284,6 +286,10 @@ static __always_inline int bpfj_mount_enforce_umount_path(
   if (!scratch) {
     return -EACCES;
   }
+  const char* operation = operation_id == BPFJ_UMOUNT_OPERATION_MOVE
+      ? "move mount source"
+      : operation_id == BPFJ_UMOUNT_OPERATION_PIVOT ? "pivot old root"
+                                                    : "umount";
   BPFJ_FILE_MATCH_CACHED_ALLOC(state);
   if (!state) {
     return -EACCES;
@@ -319,7 +325,7 @@ static __always_inline int bpfj_mount_enforce_umount_path(
     const long count = BPFJ_FILE_MATCH_CACHED(
         state,
         matcher,
-        &bpfj_mount_cache,
+        bpfj_mount_cache,
         dentry,
         &scratch->uuid,
         bpfj_file_match_cached_bind_var_array,
@@ -382,12 +388,21 @@ static __always_inline bool bpfj_mount_is_attached(struct vfsmount* vfsmount) {
   return parent && parent != mount;
 }
 
+static __always_inline int bpfj_mount_enforce_result(int result) {
+  barrier_var(result);
+  if (result > 0 || result < -4095) {
+    return -EACCES;
+  }
+  return result;
+}
+
 static __always_inline struct dentry* bpfj_mount_destination(
     const struct path* path) {
   if (!path) {
     return NULL;
   }
-  struct vfsmount* vfsmount = bpf_core_cast(path->mnt, struct vfsmount);
+  const struct path* core_path = bpf_core_cast(path, struct path);
+  struct vfsmount* vfsmount = bpf_core_cast(core_path->mnt, struct vfsmount);
   if (!vfsmount) {
     return NULL;
   }
@@ -407,8 +422,9 @@ int BPF_PROG(
   if (lsm_ret || !path || (flags & MS_REMOUNT)) {
     return lsm_ret;
   }
-  return bpfj_mount_enforce_path(
-      bpfj_ptr_to_scalar(bpf_core_cast((path), typeof(*(path)))->dentry), type);
+  return bpfj_mount_enforce_result(bpfj_mount_enforce_path(
+      bpfj_ptr_to_scalar(bpf_core_cast((path), typeof(*(path)))->dentry),
+      (uintptr_t)type));
 }
 
 SEC("lsm/sb_mount")
@@ -423,9 +439,9 @@ int BPF_PROG(
   if (lsm_ret || !path || !(flags & MS_REMOUNT)) {
     return lsm_ret;
   }
-  return bpfj_mount_enforce_path(
+  return bpfj_mount_enforce_result(bpfj_mount_enforce_path(
       bpfj_ptr_to_scalar(bpfj_mount_destination(path)),
-      bpfj_mount_path_type(path));
+      (uintptr_t)bpfj_mount_path_type(path)));
 }
 
 SEC("lsm/sb_mount")
@@ -502,10 +518,10 @@ int BPF_PROG(bpfj_umount, struct vfsmount* mnt, int flags, int lsm_ret) {
   if (lsm_ret || !mnt) {
     return lsm_ret;
   }
-  return bpfj_mount_enforce_umount_path(
+  return bpfj_mount_enforce_result(bpfj_mount_enforce_umount_path(
       bpfj_ptr_to_scalar(
           bpfj_mountpoint(mnt, bpf_core_cast(mnt->mnt_root, struct dentry))),
-      "umount");
+      BPFJ_UMOUNT_OPERATION_UMOUNT));
 }
 
 SEC("lsm/move_mount")
@@ -517,9 +533,9 @@ int BPF_PROG(
   if (lsm_ret || !from_path || !to_path) {
     return lsm_ret;
   }
-  return bpfj_mount_enforce_path(
+  return bpfj_mount_enforce_result(bpfj_mount_enforce_path(
       bpfj_ptr_to_scalar(bpf_core_cast((to_path), typeof(*(to_path)))->dentry),
-      bpfj_mount_path_type(from_path));
+      (uintptr_t)bpfj_mount_path_type(from_path)));
 }
 
 SEC("lsm/move_mount")
@@ -535,9 +551,9 @@ int BPF_PROG(
   if (!bpfj_mount_is_attached(source)) {
     return 0;
   }
-  return bpfj_mount_enforce_umount_path(
+  return bpfj_mount_enforce_result(bpfj_mount_enforce_umount_path(
       bpfj_ptr_to_scalar(bpfj_mount_destination(from_path)),
-      "move mount source");
+      BPFJ_UMOUNT_OPERATION_MOVE));
 }
 
 SEC("lsm/sb_pivotroot")
@@ -549,9 +565,9 @@ int BPF_PROG(
   if (lsm_ret || !new_path) {
     return lsm_ret;
   }
-  return bpfj_mount_enforce_path(
+  return bpfj_mount_enforce_result(bpfj_mount_enforce_path(
       bpfj_ptr_to_scalar(bpfj_mount_destination(new_path)),
-      bpfj_mount_path_type(new_path));
+      (uintptr_t)bpfj_mount_path_type(new_path)));
 }
 
 SEC("lsm/sb_pivotroot")
@@ -563,8 +579,9 @@ int BPF_PROG(
   if (lsm_ret || !old_path) {
     return lsm_ret;
   }
-  return bpfj_mount_enforce_umount_path(
-      bpfj_ptr_to_scalar(bpfj_mount_destination(old_path)), "pivot old root");
+  return bpfj_mount_enforce_result(bpfj_mount_enforce_umount_path(
+      bpfj_ptr_to_scalar(bpfj_mount_destination(old_path)),
+      BPFJ_UMOUNT_OPERATION_PIVOT));
 }
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";

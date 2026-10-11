@@ -17,7 +17,6 @@
 #include "bpfj/enforce/bpf/types_unix.h" // @manual
 #include "bpfj/match/bpf/types_mount.h" // @manual
 
-// The generated skeleton embeds bpfj_mount_cache by value.
 #include "bpfj/enforce/bpf/unix_enforce.skel.h"
 #include "bpfj/lib/GlobMap.h"
 #include "bpfj/lib/Heap.h"
@@ -157,6 +156,12 @@ Expected<> UnixEnforcer::load(
   if (auto res = heap::init(obj); !res) {
     return res;
   }
+  skel.bss().bpfj_unix_mount_cache = skel.bss().bpfj_heap_ctrl->mount_cache;
+  if (skel.bss().bpfj_unix_mount_cache == nullptr) {
+    return makeUnexpected(makeError(
+        std::errc::state_not_recoverable,
+        "shared mount cache is not initialized"));
+  }
 
   std::unordered_map<std::string, __u32> variableIds;
   for (std::size_t i = 0; i < policy.vars.size(); ++i) {
@@ -200,11 +205,7 @@ Expected<> UnixEnforcer::load(
     if (!paths.empty()) {
       auto matcher = std::make_unique<Matcher>();
       if (auto res = matcher->init(
-              obj,
-              resolveVariable,
-              Matcher::SharedMaps{},
-              rolePolicy->unix_path_matcher,
-              paths);
+              obj, resolveVariable, rolePolicy->unix_path_matcher, paths);
           !res) {
         return res.error();
       }

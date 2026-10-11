@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <string_view>
@@ -18,7 +19,6 @@
 #include <vector>
 
 #include "bpfj/err/Error.h"
-#include "bpfj/lib/DynLru.h"
 #include "bpfj/lib/GlobMap.h"
 #include "bpfj/lib/Heap.h"
 #include "bpfj/lib/PerfMap.h"
@@ -52,6 +52,13 @@ inline std::string fileMatchGlobEscape(std::string_view value) {
     out.push_back(c);
   }
   return out;
+}
+
+inline std::uint64_t fileMatchCacheCookie() {
+  std::random_device entropy;
+  std::uint64_t cookie =
+      (static_cast<std::uint64_t>(entropy()) << 32) | entropy();
+  return cookie != 0 ? cookie : 1;
 }
 
 inline std::string fileMatchVarSuffix(std::string_view suffix) {
@@ -114,7 +121,6 @@ inline std::vector<std::string_view> fileMatchComponents(
     }
     begin = end + 1;
   }
-  std::reverse(components.begin(), components.end());
   return components;
 }
 
@@ -140,12 +146,6 @@ class FileMatchCached {
       std::set<struct bpfj_file_match_node, detail::FileMatchNodeLess>;
 
  public:
-  using Lru = DynLru<Skel>;
-
-  struct SharedMaps {
-    std::shared_ptr<Lru> match;
-  };
-
   FileMatchCached() = default;
   ~FileMatchCached() {
     if (!released_) {
@@ -168,7 +168,6 @@ class FileMatchCached {
   Expected<> init(
       std::shared_ptr<Skel> skel,
       GlobKeyResolver resolveKey,
-      SharedMaps maps,
       struct bpfj_file_matcher*& matcherSlot,
       const Paths& paths) {
     if (matcher_ != nullptr) {
@@ -178,7 +177,6 @@ class FileMatchCached {
 
     obj_ = std::move(skel);
     matcherSlot_ = &matcherSlot;
-    matchLru_ = std::move(maps.match);
 
     if (auto res = heap::init(obj_); !res) {
       return res.error();
@@ -192,15 +190,7 @@ class FileMatchCached {
     detail::fileMatchArenaZero(matcher_, sizeof(*matcher_));
     *matcherSlot_ = matcher_;
 
-    if (matchLru_ != nullptr && matchLru_->get() == nullptr) {
-      if (auto res = matchLru_->init(
-              BPFJ_FILE_MATCH_CACHED_CACHE_SIZE,
-              sizeof(struct bpfj_file_match_cached_key));
-          !res) {
-        return res.error();
-      }
-    }
-    matcher_->lru = matchLru_ != nullptr ? matchLru_->get() : nullptr;
+    matcher_->cache_cookie = detail::fileMatchCacheCookie();
 
     if (auto res = compile(std::move(resolveKey), paths); !res) {
       return res.error();
@@ -211,10 +201,10 @@ class FileMatchCached {
   }
 
   void destroy() {
-    matchLru_.reset();
-
     heap::free(obj_, dataVec_);
     dataVec_ = nullptr;
+    heap::free(obj_, pathDepths_);
+    pathDepths_ = nullptr;
 
     if (initMap_) {
       initMap_->destroy();
@@ -262,12 +252,14 @@ class FileMatchCached {
     std::map<std::int32_t, NodeSet> matchNodes;
     std::map<std::int32_t, std::vector<std::int32_t>> initializers;
     std::map<std::int32_t, Value> values;
+    std::vector<__u32> pathDepths;
     std::int32_t nextNode = 0;
     std::int32_t nextInitializer = 0;
     std::int32_t pathId = 0;
 
     for (const auto& [path, value] : paths) {
       auto components = detail::fileMatchComponents(path);
+      pathDepths.push_back(path == "/" ? 0 : components.size());
       for (std::size_t pos = 0; pos < components.size(); ++pos) {
         if (pos > static_cast<std::size_t>(
                       std::numeric_limits<std::int32_t>::max())) {
@@ -313,7 +305,26 @@ class FileMatchCached {
     if (auto res = initInitializers(initializers); !res) {
       return res.error();
     }
+    if (auto res = initPathDepths(pathDepths); !res) {
+      return res.error();
+    }
     return initValues(values);
+  }
+
+  Expected<> initPathDepths(const std::vector<__u32>& pathDepths) {
+    if (pathDepths.empty()) {
+      return unit;
+    }
+    auto* depths = heap::allocArray<__u32>(obj_, pathDepths.size());
+    if (depths == nullptr) {
+      return Error(
+          std::errc::not_enough_memory, "path depth allocation failed");
+    }
+    pathDepths_ = depths;
+    detail::fileMatchArenaWrite(
+        depths, pathDepths.data(), pathDepths.size() * sizeof(pathDepths[0]));
+    matcher_->path_depths = depths;
+    return unit;
   }
 
   Expected<> initGlob(
@@ -402,7 +413,6 @@ class FileMatchCached {
   }
 
   std::shared_ptr<Skel> obj_;
-  std::shared_ptr<Lru> matchLru_;
   struct bpfj_file_matcher** matcherSlot_ = nullptr;
   struct bpfj_file_matcher* matcher_ = nullptr;
   std::optional<GlobMap<Skel>> globMap_;
@@ -412,6 +422,7 @@ class FileMatchCached {
   std::optional<PerfMap<Skel>> initMap_;
   std::vector<std::int32_t*> initializerValues_;
   void* dataVec_ = nullptr;
+  __u32* pathDepths_ = nullptr;
   bool released_ = false;
 };
 

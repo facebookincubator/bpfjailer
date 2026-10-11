@@ -2,16 +2,44 @@
 
 #pragma once
 
-#include "bpfj/lib/bpf/types_dyn_lru.h"
 #include "bpfj/lib/bpf/types_glob_map.h"
 #include "bpfj/lib/bpf/types_perf_map.h"
 #include "bpfj/lib/bpf/types_str_map.h"
 #include "bpfj/match/bpf/types_file_match.h"
+#include "bpfj/match/bpf/types_matcher_state.h"
 
-// Capped by the dyn LRU rather than by the old LRU_HASH's 8192:
-// BPFJ_DYN_LRU_MAX_CAPACITY bounds the destroy loop for the verifier and the
-// index's arena footprint, and init rejects anything above it.
-#define BPFJ_FILE_MATCH_CACHED_CACHE_SIZE BPFJ_DYN_LRU_MAX_CAPACITY
+#define BPFJ_FILE_MATCH_CACHED_CACHE_SIZE 8192
+#define BPFJ_FILE_MATCH_CACHED_STATS_SLOTS 256
+#define BPFJ_FILE_MATCH_CACHED_MAX_SAVED_DENTRIES 64
+
+__inline __attribute__((always_inline)) __u64
+bpfj_file_match_cached_bloom_hash(__u64 dentry) {
+  __u64 hash = dentry;
+  hash ^= hash >> 33;
+  hash *= 0xff51afd7ed558ccdULL;
+  hash ^= hash >> 33;
+  return hash;
+}
+
+struct bpfj_file_match_cached_stats {
+  __u64 hit;
+  __u64 miss;
+  __u64 busy;
+  __u64 invalid;
+  __u64 insert_exists;
+  __u64 insert_busy;
+  __u64 insert_error;
+  __u64 reserved;
+};
+
+struct bpfj_file_match_cached_entry {
+  __u64 rename_generation;
+  __u64 ancestry_bloom[2];
+  __u32 iter_count;
+  __u32 dentry_count;
+  __u64 dentries[BPFJ_FILE_MATCH_CACHED_MAX_SAVED_DENTRIES];
+  struct bpfj_file_match_node nodes[BPFJ_FILE_MATCH_MAX_ITERS];
+};
 
 struct bpfj_file_matcher {
   // Maps a path component (a single dentry name) to the set of pattern nodes it
@@ -34,7 +62,10 @@ struct bpfj_file_matcher {
   // exactly one entry and the path_id is the index -- no probe, no key, and no
   // per-entry allocation.
   void __arena* data_vec;
-  struct bpfj_dyn_lru __arena* lru;
+  // Number of components in each path, with zero reserved for `/`, so the
+  // root-to-leaf matcher can retain completed ancestor rules.
+  __u32 __arena* path_depths;
+  __u64 cache_cookie;
   // Bytes per entry, and how many of them data_vec holds. The size is whatever
   // the owning userspace matcher's value type is; BPF only ever hands the entry
   // back to a caller that knows what it is.

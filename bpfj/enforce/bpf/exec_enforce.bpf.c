@@ -19,8 +19,7 @@
 #define S_ISUID 0004000
 #define S_ISGID 0002000
 
-struct bpfj_dyn_lru __arena* bpfj_exec_match_lru;
-struct bpfj_mount_cache __arena bpfj_exec_mount_cache;
+struct bpfj_mount_cache __arena* bpfj_exec_mount_cache;
 
 // GLOBAL function: verify path-entry selection independently from the policy
 // walk while returning only the scalar decision supported by BPF subprograms.
@@ -99,7 +98,7 @@ static __always_inline int bpfj_exec_enforce(uintptr_t dentry, __u32 wanted) {
       long count = BPFJ_FILE_MATCH_CACHED(
           state,
           matcher,
-          &bpfj_exec_mount_cache,
+          bpfj_exec_mount_cache,
           dentry,
           &uuid,
           bpfj_file_match_cached_bind_var_array,
@@ -195,21 +194,6 @@ int BPF_PROG(
   return bpfj_exec_enforce(
       bpfj_ptr_to_scalar(bpf_core_cast((file), typeof(*(file)))->f_path.dentry),
       BPFJ_EXEC_ALLOW_SHARED_OBJECT);
-}
-
-SEC("lsm/inode_rename")
-int BPF_PROG(
-    bpfj_exec_inode_rename,
-    struct inode* old_dir,
-    struct dentry* old_dentry,
-    struct inode* new_dir,
-    struct dentry* new_dentry,
-    int lsm_ret) {
-  if (lsm_ret) {
-    return lsm_ret;
-  }
-  return BPFJ_FILE_MATCH_CACHED_INVALIDATE_ON_RENAME(
-      bpfj_exec_match_lru, old_dentry);
 }
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";

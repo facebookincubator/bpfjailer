@@ -20,7 +20,6 @@
 #include "bpfj/enforce/bpf/types_mount_enforce.h" // @manual
 #include "bpfj/match/bpf/types_mount.h" // @manual
 
-// The generated skeleton embeds bpfj_mount_cache by value.
 #include "bpfj/enforce/bpf/mount_enforce.skel.h"
 #include "bpfj/lib/Heap.h"
 #include "bpfj/lib/StrMap.h"
@@ -84,6 +83,12 @@ Expected<> MountEnforcer::load(
   if (auto res = heap::init(obj); !res) {
     return res;
   }
+  skel.bss().bpfj_mount_cache = skel.bss().bpfj_heap_ctrl->mount_cache;
+  if (skel.bss().bpfj_mount_cache == nullptr) {
+    return makeUnexpected(makeError(
+        std::errc::state_not_recoverable,
+        "shared mount cache is not initialized"));
+  }
 
   std::unordered_map<std::string, __u32> variableIds;
   for (std::size_t i = 0; i < policy.vars.size(); ++i) {
@@ -102,8 +107,6 @@ Expected<> MountEnforcer::load(
     return found->second;
   };
 
-  auto matchLru =
-      std::make_shared<Matcher::Lru>(obj, skel.bss().bpfj_mount_match_lru);
   std::vector<std::unique_ptr<Matcher>> matchers;
   auto* publishedPolicies = static_cast<struct bpfj_str_map*>(
       skel.bss().bpfj_heap_ctrl->role_policies);
@@ -153,11 +156,7 @@ Expected<> MountEnforcer::load(
 
       auto matcher = std::make_unique<Matcher>();
       if (auto res = matcher->init(
-              obj,
-              resolveVariable,
-              Matcher::SharedMaps{.match = matchLru},
-              rolePolicy->mount_matcher,
-              paths);
+              obj, resolveVariable, rolePolicy->mount_matcher, paths);
           !res) {
         return res.error();
       }
@@ -176,11 +175,7 @@ Expected<> MountEnforcer::load(
       }
       auto matcher = std::make_unique<Matcher>();
       if (auto res = matcher->init(
-              obj,
-              resolveVariable,
-              Matcher::SharedMaps{.match = matchLru},
-              rolePolicy->umount_matcher,
-              paths);
+              obj, resolveVariable, rolePolicy->umount_matcher, paths);
           !res) {
         return res.error();
       }
@@ -212,7 +207,6 @@ Expected<> MountEnforcer::load(
   for (auto& matcher : matchers) {
     matcher->release();
   }
-  matchLru->release();
   return unit;
 }
 

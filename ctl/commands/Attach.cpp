@@ -12,6 +12,7 @@
 #include "bpfj/enforce/Jailer.h"
 #include "bpfj/enforce/KillEnforcer.h"
 #include "bpfj/enforce/LkmEnforcer.h"
+#include "bpfj/enforce/MatcherState.h"
 #include "bpfj/enforce/MountEnforcer.h"
 #include "bpfj/enforce/MqEnforcer.h"
 #include "bpfj/enforce/PodVars.h"
@@ -69,6 +70,13 @@ int attachPolicy(
   auto scratchMaps = Jailer::load(pin, policy);
   if (!scratchMaps) {
     std::cerr << "attach failed: " << scratchMaps.error() << std::endl;
+    return 1;
+  }
+
+  // Before cache-using enforcers, so no rename can occur after a cache is
+  // attached but before its invalidation hook is active.
+  if (auto res = MatcherState::load(pin); !res) {
+    std::cerr << "matcher state load failed: " << res.error() << std::endl;
     return 1;
   }
 

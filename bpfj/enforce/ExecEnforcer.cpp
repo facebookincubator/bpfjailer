@@ -83,9 +83,13 @@ Expected<> ExecEnforcer::load(
   if (auto res = heap::init(obj); !res) {
     return res;
   }
+  skel.bss().bpfj_exec_mount_cache = skel.bss().bpfj_heap_ctrl->mount_cache;
+  if (skel.bss().bpfj_exec_mount_cache == nullptr) {
+    return makeUnexpected(makeError(
+        std::errc::state_not_recoverable,
+        "shared mount cache is not initialized"));
+  }
 
-  auto matchLru =
-      std::make_shared<Matcher::Lru>(obj, skel.bss().bpfj_exec_match_lru);
   std::unordered_map<std::string, __u32> variableIds;
   for (std::size_t i = 0; i < policy.vars.size(); ++i) {
     variableIds.emplace(policy.vars[i], static_cast<__u32>(i + 1));
@@ -133,11 +137,7 @@ Expected<> ExecEnforcer::load(
     auto* rolePolicy = const_cast<struct bpfj_role_policy*>(*foundPolicy);
     auto matcher = std::make_unique<Matcher>();
     if (auto res = matcher->init(
-            obj,
-            resolveVariable,
-            Matcher::SharedMaps{.match = matchLru},
-            rolePolicy->exec_matcher,
-            paths);
+            obj, resolveVariable, rolePolicy->exec_matcher, paths);
         !res) {
       return res.error();
     }
@@ -153,7 +153,6 @@ Expected<> ExecEnforcer::load(
       {skel.links().bpfj_exec_bprm_check, "bpfj_exec_bprm_check"},
       {skel.links().bpfj_exec_mmap_file, "bpfj_exec_mmap_file"},
       {skel.links().bpfj_exec_file_mprotect, "bpfj_exec_file_mprotect"},
-      {skel.links().bpfj_exec_inode_rename, "bpfj_exec_inode_rename"},
   };
   for (const auto& [link, name] : links) {
     if (auto res = pins::pinLink(link, name, linkDir); !res) {
@@ -164,7 +163,6 @@ Expected<> ExecEnforcer::load(
   for (auto& matcher : matchers) {
     matcher->release();
   }
-  matchLru->release();
   return unit;
 }
 

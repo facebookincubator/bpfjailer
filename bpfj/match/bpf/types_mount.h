@@ -12,7 +12,6 @@
 
 struct bpfj_mount_key {
   struct dentry* dentry;
-  __u64 cpu;
 };
 
 struct bpfj_mount_lock {
@@ -34,8 +33,7 @@ struct bpfj_mount_snapshot_value {
 };
 
 struct bpfj_mount_snapshot {
-  __u32 mount_lock;
-  __u32 reserved;
+  __u64 mount_generation;
   struct bpfj_const_map roots;
 };
 
@@ -52,7 +50,7 @@ struct bpfj_mount_cache {
 struct bpfj_mount_descriptor {
   __u64 ns_ino;
   __u64 namespace_addr;
-  __u32 mount_lock;
+  __u64 mount_generation;
 };
 
 struct bpfj_mount_fallback {

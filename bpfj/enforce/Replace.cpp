@@ -29,6 +29,7 @@
 #include "bpfj/enforce/Jailer.h"
 #include "bpfj/enforce/KillEnforcer.h"
 #include "bpfj/enforce/LkmEnforcer.h"
+#include "bpfj/enforce/MatcherState.h"
 #include "bpfj/enforce/MountEnforcer.h"
 #include "bpfj/enforce/MqEnforcer.h"
 #include "bpfj/enforce/PodVars.h"
@@ -1682,6 +1683,12 @@ struct BackfillStats {
       generationControl ? &*generationControl : nullptr);
   if (!scratchMaps) {
     return makeUnexpected(scratchMaps.error());
+  }
+
+  // Load MatcherState before cache-using enforcers. Otherwise a rename can
+  // populate stale cache state before anything journals it.
+  if (auto res = MatcherState::load(newCfg); !res) {
+    return makeUnexpected(res.error());
   }
 
   if (auto res = VerityEnforcer::load(newCfg, policy, *scratchMaps); !res) {

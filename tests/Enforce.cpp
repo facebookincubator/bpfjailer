@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "bpfj/enforce/Jailer.h"
+#include "bpfj/enforce/MatcherState.h"
 #include "bpfj/enforce/Pods.h"
 
 namespace bpfjailer::test {
@@ -28,6 +29,7 @@ Policy policyOf(const std::string& toml) {
 
 void loadJailer(const Policy& policy) {
   ASSERT_OK(Jailer::load(testPins(), policy));
+  ASSERT_OK(MatcherState::load(testPins()));
 }
 
 ScratchMapFds loadJailerWithScratchMaps(const Policy& policy) {
@@ -39,6 +41,7 @@ ScratchMapFds loadJailerWithScratchMaps(const Policy& policy) {
         "Jailer::load(testPins(), policy)",
         "      " + scratchMaps.error().message());
   }
+  ASSERT_OK(MatcherState::load(testPins()));
   return std::move(*scratchMaps);
 }
 

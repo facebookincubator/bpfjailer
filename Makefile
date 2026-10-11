@@ -202,6 +202,7 @@ BPF_SRCS := \
 	bpfj/enforce/bpf/fs_enforce.bpf.c \
 	bpfj/enforce/bpf/unix_enforce.bpf.c \
 	bpfj/enforce/bpf/mount_enforce.bpf.c \
+	bpfj/enforce/bpf/matcher_state.bpf.c \
 	bpfj/enforce/bpf/enroll.bpf.c
 
 TEST_BPF_SRCS := \
@@ -243,6 +244,7 @@ COMMON_SRCS := \
 	bpfj/enforce/ScratchMapFds.cpp \
 	bpfj/enforce/Jailer.cpp \
 	bpfj/enforce/Replace.cpp \
+	bpfj/enforce/MatcherState.cpp \
 	bpfj/enforce/VerityEnforcer.cpp \
 	bpfj/enforce/ExecEnforcer.cpp \
 	bpfj/enforce/BpfEnforcer.cpp \

@@ -26,6 +26,7 @@
 #include "bpfj/lib/StrMap.h"
 #include "bpfj/libbpf-cpp/BpfLink.h"
 #include "bpfj/libbpf-cpp/BpfSkel.h"
+#include "bpfj/match/bpf/types_mount.h" // @manual
 
 namespace bpfjailer {
 
@@ -213,12 +214,23 @@ Expected<ScratchMapFds> Jailer::load(
     return makeUnexpected(res.error());
   }
 
+  auto* const heapControl = skel.bss().bpfj_heap_ctrl;
+  if (heapControl->mount_cache == nullptr) {
+    heapControl->mount_cache =
+        heap::alloc<struct bpfj_mount_cache>(created.value());
+    if (heapControl->mount_cache == nullptr) {
+      return makeUnexpected(makeError(
+          std::errc::not_enough_memory,
+          "shared mount cache allocation failed"));
+    }
+  }
+
   auto generation = arena::generationForMapExtra(
-      reinterpret_cast<std::uintptr_t>(skel.bss().bpfj_heap_ctrl));
+      reinterpret_cast<std::uintptr_t>(heapControl));
   if (!generation) {
     return makeUnexpected(generation.error());
   }
-  skel.bss().bpfj_heap_ctrl->generation = *generation;
+  heapControl->generation = *generation;
 
   if (auto res = initializeMutationJournal(cfg); !res) {
     return makeUnexpected(res.error());

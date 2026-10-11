@@ -3,7 +3,9 @@
 #include "tests/Enforce.h"
 #include "tests/Harness.h"
 
+#include <bpf/bpf.h>
 #include <fcntl.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -12,10 +14,13 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "bpfj/enforce/FsEnforcer.h"
 #include "bpfj/enforce/PodVars.h"
 #include "bpfj/enforce/Pods.h"
+#include "bpfj/match/bpf/types_file_match_cached.h"
+#include "bpfj/match/bpf/types_matcher_state.h"
 
 using bpfjailer::FsEnforcer;
 using bpfjailer::Policy;
@@ -85,6 +90,46 @@ void attach(const std::string& paths) {
   }
   ::close(fd);
   return 0;
+}
+
+[[nodiscard]] std::vector<struct bpfj_file_match_cached_key>
+exactCacheKeysForInode(ino_t ino) {
+  auto map =
+      bpfjailer::pins::openPinnedMap(testPins(), "bpfj_file_match_exact_cache");
+  ASSERT(map);
+
+  std::vector<struct bpfj_file_match_cached_key> matches;
+  struct bpfj_file_match_cached_key current{};
+  struct bpfj_file_match_cached_key next{};
+  const void* previous = nullptr;
+  while (::bpf_map_get_next_key(map->get(), previous, &next) == 0) {
+    if (next.ino == static_cast<__u64>(ino)) {
+      matches.push_back(next);
+    }
+    current = next;
+    previous = &current;
+  }
+  return matches;
+}
+
+[[nodiscard]] struct bpfj_file_match_cached_entry exactCacheEntry(
+    const struct bpfj_file_match_cached_key& key) {
+  auto map =
+      bpfjailer::pins::openPinnedMap(testPins(), "bpfj_file_match_exact_cache");
+  ASSERT(map);
+  struct bpfj_file_match_cached_entry entry{};
+  ASSERT_EQ(::bpf_map_lookup_elem(map->get(), &key, &entry), 0);
+  return entry;
+}
+
+[[nodiscard]] struct bpfj_matcher_state matcherState() {
+  auto map =
+      bpfjailer::pins::openPinnedMap(testPins(), "bpfj_file_match_state");
+  ASSERT(map);
+  const __u32 zero = 0;
+  struct bpfj_matcher_state state{};
+  ASSERT_EQ(::bpf_map_lookup_elem(map->get(), &zero, &state), 0);
+  return state;
 }
 
 } // namespace
@@ -206,6 +251,16 @@ TEST(FsEnforcer, DeniedRuleDeniesReads) {
   ASSERT_EQ(actor.run(), EACCES);
 }
 
+TEST(FsEnforcer, PolicyPathDoesNotMatchTheSameSuffixBelowAnotherDirectory) {
+  Fixture fixture;
+  const std::string suffix = fixture.file().substr(std::string("/tmp").size());
+  attach(rule(suffix, "read-only"));
+
+  Child actor([&] { return openErrno(fixture.file(), O_RDONLY); });
+  enroll("svc", actor.pid());
+  ASSERT_EQ(actor.run(), EACCES);
+}
+
 TEST(FsEnforcer, ReadWriteAllowsWrites) {
   Fixture fixture;
   attach(rule(fixture.file(), "read-write"));
@@ -279,6 +334,104 @@ TEST(FsEnforcer, HardLinkAliasesDoNotShareCachedPolicy) {
   ASSERT_EQ(actor.run(), EACCES);
 }
 
+TEST(FsEnforcer, NativeExactAndCheckpointCachesPopulate) {
+  Fixture fixture;
+  const std::string sibling = fixture.dir() + "/new";
+  const int fd = ::open(sibling.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+  ASSERT(fd >= 0);
+  ASSERT_EQ(::close(fd), 0);
+  attach(rule(fixture.dir(), "read-only"));
+
+  ASSERT(bpfjailer::test::pinnedMapIsEmpty("bpfj_file_match_exact_cache"));
+  ASSERT(bpfjailer::test::pinnedMapIsEmpty("bpfj_file_match_checkpoint_cache"));
+
+  Child actor([&] {
+    int error = openErrno(fixture.file(), O_RDONLY);
+    if (error != 0) {
+      return error;
+    }
+    error = openErrno(fixture.file(), O_RDONLY);
+    return error != 0 ? error : openErrno(sibling, O_RDONLY);
+  });
+  enroll("svc", actor.pid());
+  ASSERT_EQ(actor.run(), 0);
+
+  struct stat first{};
+  struct stat second{};
+  ASSERT_EQ(::stat(fixture.file().c_str(), &first), 0);
+  ASSERT_EQ(::stat(sibling.c_str(), &second), 0);
+  ASSERT_EQ(exactCacheKeysForInode(first.st_ino).size(), 1U);
+  ASSERT_EQ(exactCacheKeysForInode(second.st_ino).size(), 1U);
+  ASSERT(
+      !bpfjailer::test::pinnedMapIsEmpty("bpfj_file_match_checkpoint_cache"));
+}
+
+TEST(FsEnforcer, PrivateMountNamespaceDoesNotInvalidateTheRootCache) {
+  Fixture fixture;
+  const std::string mountpoint = fixture.dir() + "/mount";
+  ASSERT_EQ(::mkdir(mountpoint.c_str(), 0700), 0);
+  attach(rule(fixture.dir(), "read-write"));
+
+  Child actor([&] {
+    int error = openErrno(fixture.file(), O_RDONLY);
+    if (error != 0) {
+      return error;
+    }
+    if (::mount("tmpfs", mountpoint.c_str(), "tmpfs", 0, nullptr) != 0) {
+      return errno;
+    }
+    error = openErrno(fixture.file(), O_RDONLY);
+    const int unmountError = ::umount2(mountpoint.c_str(), MNT_DETACH);
+    if (error != 0) {
+      return error;
+    }
+    return unmountError == 0 ? 0 : errno;
+  });
+  enroll("svc", actor.pid());
+  ASSERT_EQ(actor.run(), 0);
+
+  struct stat info{};
+  ASSERT_EQ(::stat(fixture.file().c_str(), &info), 0);
+  const auto keys = exactCacheKeysForInode(info.st_ino);
+  ASSERT_EQ(keys.size(), 1U);
+  ASSERT_EQ(::rmdir(mountpoint.c_str()), 0);
+}
+
+TEST(FsEnforcer, RenameJournalWrapRefreshesAnExactEntry) {
+  Fixture fixture;
+  const std::string first = fixture.dir() + "/new";
+  const std::string second = fixture.dir() + "/renamed";
+  const int fd = ::open(first.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+  ASSERT(fd >= 0);
+  ASSERT_EQ(::close(fd), 0);
+  attach(rule(fixture.dir(), "read-write"));
+
+  Child actor([&] {
+    int error = openErrno(fixture.file(), O_RDONLY);
+    if (error != 0) {
+      return error;
+    }
+    for (std::size_t i = 0; i <= BPFJ_FILE_MATCH_CACHED_RENAME_JOURNAL_SIZE / 4;
+         ++i) {
+      if (::rename(first.c_str(), second.c_str()) != 0 ||
+          ::rename(second.c_str(), first.c_str()) != 0) {
+        return errno;
+      }
+    }
+    return openErrno(fixture.file(), O_RDONLY);
+  });
+  enroll("svc", actor.pid());
+  ASSERT_EQ(actor.run(), 0);
+
+  struct stat info{};
+  ASSERT_EQ(::stat(fixture.file().c_str(), &info), 0);
+  const auto keys = exactCacheKeysForInode(info.st_ino);
+  ASSERT_EQ(keys.size(), 1U);
+  const auto entry = exactCacheEntry(keys.front());
+  const auto state = matcherState();
+  ASSERT_EQ(entry.rename_generation, state.rename_journal.generation);
+}
+
 TEST(FsEnforcer, ReadOnlyDirectoryDeniesCreate) {
   Fixture fixture;
   attach(rule(fixture.dir(), "read-only"));
@@ -306,6 +459,49 @@ TEST(FsEnforcer, RenameInvalidatesTheCachedPath) {
   });
   enroll("svc", actor.pid());
   ASSERT_EQ(actor.run(), EACCES);
+}
+
+TEST(FsEnforcer, DirectoryRenameInvalidatesCachedDescendants) {
+  char rootPath[] = "/tmp/bpfj-fs-dir-rename-test-XXXXXX";
+  ASSERT(::mkdtemp(rootPath) != nullptr);
+  const std::string root = rootPath;
+  const std::string source = root + "/source";
+  const std::string sourceSubdir = source + "/subdir";
+  const std::string sourceFile = sourceSubdir + "/data";
+  const std::string destination = root + "/destination";
+  const std::string destinationFile = destination + "/subdir/data";
+  ASSERT_EQ(::mkdir(source.c_str(), 0700), 0);
+  ASSERT_EQ(::mkdir(sourceSubdir.c_str(), 0700), 0);
+  const int fd =
+      ::open(sourceFile.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+  ASSERT(fd >= 0);
+  ASSERT_EQ(::close(fd), 0);
+
+  attach(rule(root, "read-write") + rule(destinationFile, std::nullopt));
+
+  Child actor([&] {
+    int error = openErrno(sourceFile, O_RDONLY);
+    if (error != 0) {
+      return error;
+    }
+    // Hit the leaf cache before moving the directory and all of its cached
+    // descendants to a path with a different policy.
+    error = openErrno(sourceFile, O_RDONLY);
+    if (error != 0) {
+      return error;
+    }
+    if (::rename(source.c_str(), destination.c_str()) != 0) {
+      return errno;
+    }
+    return openErrno(destinationFile, O_RDONLY);
+  });
+  enroll("svc", actor.pid());
+  ASSERT_EQ(actor.run(), EACCES);
+
+  ASSERT_EQ(::unlink(destinationFile.c_str()), 0);
+  ASSERT_EQ(::rmdir((destination + "/subdir").c_str()), 0);
+  ASSERT_EQ(::rmdir(destination.c_str()), 0);
+  ASSERT_EQ(::rmdir(root.c_str()), 0);
 }
 
 TEST(FsEnforcer, CacheSeparatesPodsWithDifferentVariableBindings) {

@@ -30,17 +30,8 @@ struct bpfj_file_match_cached_key {
   __u64 ino;
   __u64 subvol;
   struct bpfj_uuid uuid;
-  __u64 rename_counter;
+  __u64 matcher;
+  __u64 mount_generation;
   __u32 dev;
-  __u32 mount_lock;
-};
-
-struct bpfj_file_match_cached_locks {
-  union {
-    struct {
-      __u32 rename_counter;
-      __u32 mount_lock;
-    };
-    __u64 key;
-  };
+  __u32 reserved;
 };

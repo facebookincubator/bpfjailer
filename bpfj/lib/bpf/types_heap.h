@@ -62,6 +62,7 @@ _Static_assert(BPFJ_HEAP_MAX_ARENA_SIZE % BPFJ_HEAP_PAGE_SIZE == 0, "");
 // Data Structures (shared between BPF and userspace)
 
 struct bpfj_str_map;
+struct bpfj_mount_cache;
 
 // Block header: 8 bytes, precedes every block's payload.
 struct bpfj_heap_block_hdr {
@@ -94,6 +95,7 @@ struct bpfj_heap_control {
   void __arena* var_catalog;
   void __arena* mutation_journal;
   struct bpfj_str_map __arena* role_policies;
+  struct bpfj_mount_cache __arena* mount_cache;
 };
 
 struct bpfj_vec {

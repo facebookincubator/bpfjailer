@@ -15,7 +15,6 @@
 #include "bpfj/enforce/bpf/types_fs.h" // @manual
 #include "bpfj/match/bpf/types_mount.h" // @manual
 
-// The generated skeleton embeds bpfj_mount_cache by value.
 #include "bpfj/enforce/bpf/fs_enforce.skel.h"
 #include "bpfj/lib/Heap.h"
 #include "bpfj/libbpf-cpp/BpfSkel.h"
@@ -65,9 +64,13 @@ Expected<> FsEnforcer::load(
   if (auto res = heap::init(obj); !res) {
     return res;
   }
+  skel.bss().bpfj_fs_mount_cache = skel.bss().bpfj_heap_ctrl->mount_cache;
+  if (skel.bss().bpfj_fs_mount_cache == nullptr) {
+    return makeUnexpected(makeError(
+        std::errc::state_not_recoverable,
+        "shared mount cache is not initialized"));
+  }
 
-  auto matchLru =
-      std::make_shared<Matcher::Lru>(obj, skel.bss().bpfj_fs_match_lru);
   std::unordered_map<std::string, __u32> variableIds;
   for (std::size_t i = 0; i < policy.vars.size(); ++i) {
     variableIds.emplace(policy.vars[i], static_cast<__u32>(i + 1));
@@ -109,12 +112,8 @@ Expected<> FsEnforcer::load(
     }
     auto* rolePolicy = const_cast<struct bpfj_role_policy*>(*foundPolicy);
     auto matcher = std::make_unique<Matcher>();
-    if (auto res = matcher->init(
-            obj,
-            resolveVariable,
-            Matcher::SharedMaps{.match = matchLru},
-            rolePolicy->fs_matcher,
-            paths);
+    if (auto res =
+            matcher->init(obj, resolveVariable, rolePolicy->fs_matcher, paths);
         !res) {
       return res.error();
     }
@@ -155,7 +154,6 @@ Expected<> FsEnforcer::load(
   for (auto& matcher : matchers) {
     matcher->release();
   }
-  matchLru->release();
   return unit;
 }
 

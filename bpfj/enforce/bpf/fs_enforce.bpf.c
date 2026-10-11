@@ -19,8 +19,7 @@
 
 // Each role policy points directly at its matcher while all roles share the
 // inode cache and PID 1 mount snapshot.
-struct bpfj_dyn_lru __arena* bpfj_fs_match_lru;
-struct bpfj_mount_cache __arena bpfj_fs_mount_cache;
+struct bpfj_mount_cache __arena* bpfj_fs_mount_cache;
 
 static __always_inline bool bpfj_fs_mode_allowed(__u32 granted, __u32 wanted) {
   if ((wanted & FMODE_WRITE) && !(granted & FMODE_WRITE)) {
@@ -102,7 +101,7 @@ static __always_inline int bpfj_fs_enforce(uintptr_t dentry, __u32 wanted) {
       long count = BPFJ_FILE_MATCH_CACHED(
           state,
           matcher,
-          &bpfj_fs_mount_cache,
+          bpfj_fs_mount_cache,
           dentry,
           &uuid,
           bpfj_file_match_cached_bind_var_array,
@@ -134,11 +133,6 @@ static __always_inline int bpfj_fs_enforce(uintptr_t dentry, __u32 wanted) {
 #define BPFJ_FS_CHECK(_dentry, _mode) \
   bpfj_fs_enforce(bpfj_ptr_to_scalar(_dentry), _mode)
 
-static __always_inline bool bpfj_fs_current_enrolled(void) {
-  struct bpfj_pid_data* pid_data = bpfj_get_current_pid_data();
-  return pid_data && pid_data->num_pods != 0;
-}
-
 SEC("lsm/file_open")
 int BPF_PROG(bpfj_fs_file_open, struct file* file, int lsm_ret) {
   if (lsm_ret) {
@@ -163,9 +157,6 @@ int BPF_PROG(
   if (ret) {
     return ret;
   }
-  if (bpfj_fs_current_enrolled()) {
-    BPFJ_FILE_MATCH_CACHED_INVALIDATE(bpfj_fs_match_lru, dentry);
-  }
   return 0;
 }
 
@@ -182,9 +173,6 @@ int BPF_PROG(
   int ret = BPFJ_FS_CHECK(new_dentry, FMODE_WRITE);
   if (ret) {
     return ret;
-  }
-  if (bpfj_fs_current_enrolled()) {
-    BPFJ_FILE_MATCH_CACHED_INVALIDATE(bpfj_fs_match_lru, old_dentry);
   }
   return 0;
 }
@@ -236,7 +224,6 @@ int BPF_PROG(
     return ret;
   }
 
-  BPFJ_FILE_MATCH_CACHED_INVALIDATE_ON_RENAME(bpfj_fs_match_lru, old_dentry);
   return 0;
 }
 
@@ -273,9 +260,6 @@ int BPF_PROG(
   int ret = BPFJ_FS_CHECK(dentry, FMODE_WRITE);
   if (ret) {
     return ret;
-  }
-  if (bpfj_fs_current_enrolled()) {
-    BPFJ_FILE_MATCH_CACHED_INVALIDATE(bpfj_fs_match_lru, dentry);
   }
   return 0;
 }

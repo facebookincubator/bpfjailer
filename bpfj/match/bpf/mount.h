@@ -5,10 +5,14 @@
 #include "bpfj/lib/bpf/heap.h"
 #include "bpfj/lib/bpf/lock.h"
 #include "bpfj/lib/bpf/shared_ptr.h"
+#include "bpfj/match/bpf/matcher_state.h"
 #include "bpfj/match/bpf/types_mount.h"
 
 extern const void mount_lock __ksym;
 
+// The global mount lock protects the mount tree while it is changing. It is
+// only a consistency sequence for snapshot construction. Cache generations
+// come from the root mount namespace's own event counter.
 __noinline u32 bpfj_mount_seqcount() {
   return BPF_CORE_READ(
       ((const seqlock_t*)&mount_lock), seqcount.seqcount.sequence);
@@ -24,6 +28,36 @@ static __always_inline void bpfj_mount_task_cleanup(struct task_struct** task) {
   if (task && *task) {
     bpf_task_release(*task);
   }
+}
+
+static __noinline __u64 bpfj_mount_root_generation(void) {
+  struct bpfj_matcher_state* state = bpfj_matcher_state_get();
+  uintptr_t namespace_addr = state ? state->init_mount_namespace : 0;
+  struct mnt_namespace* ns = namespace_addr
+      ? bpf_core_cast((void*)namespace_addr, struct mnt_namespace)
+      : NULL;
+  if (ns) {
+    return ns->event;
+  }
+
+  __attribute((cleanup(bpfj_mount_task_cleanup))) struct task_struct* task =
+      bpf_task_from_pid(1);
+  if (!task) {
+    return 0;
+  }
+  struct task_struct* init_task = bpf_core_cast(task, struct task_struct);
+  struct nsproxy* nsproxy = init_task->nsproxy;
+  if (!nsproxy) {
+    return 0;
+  }
+  ns = bpf_core_cast(nsproxy, struct nsproxy)->mnt_ns;
+  if (!ns) {
+    return 0;
+  }
+  if (state) {
+    __sync_val_compare_and_swap(&state->init_mount_namespace, 0, (uintptr_t)ns);
+  }
+  return ns->event;
 }
 
 static __always_inline long bpfj_mount_snapshot_insert(
@@ -97,7 +131,8 @@ __noinline long bpfj_mount_snapshot_visit(
 
 static __noinline long bpfj_mount_snapshot_build(
     uintptr_t namespace_i,
-    __u32 generation,
+    __u64 mount_generation,
+    __u32 mount_sequence,
     struct bpfj_shared_ptr* out) {
   struct mnt_namespace* ns = (struct mnt_namespace*)namespace_i;
   __u32 mounts = BPF_CORE_READ(ns, nr_mounts);
@@ -115,27 +150,26 @@ static __noinline long bpfj_mount_snapshot_build(
   __u32 bytes =
       (__u32) __builtin_offsetof(struct bpfj_mount_snapshot, roots) + map_bytes;
 
-  struct bpfj_shared_ptr snapshot_ptr = bpfj_shared_ptr_make(bytes);
-  if (!bpfj_shared_ptr_valid(snapshot_ptr)) {
+  *out = bpfj_shared_ptr_make(bytes);
+  if (!bpfj_shared_ptr_valid(*out)) {
     return -ENOMEM;
   }
-  struct bpfj_mount_snapshot __arena* snapshot = snapshot_ptr.buf;
-  snapshot->mount_lock = generation;
-  snapshot->reserved = 0;
+  struct bpfj_mount_snapshot __arena* snapshot = out->buf;
+  snapshot->mount_generation = mount_generation;
   long ret = bpfj_const_map_init(
       &snapshot->roots,
       mounts,
       sizeof(__u64),
       sizeof(struct bpfj_mount_snapshot_value));
   if (ret < 0) {
-    bpfj_shared_ptr_release(&snapshot_ptr);
+    bpfj_shared_ptr_release(out);
     return ret;
   }
 
   __attribute((cleanup(bpfj_heap_free_ptr))) void __arena* stack_buf =
       BPFJ_HEAP_ALLOC(sizeof(struct rb_node*) * BPFJ_MOUNT_MAX_TREE_BREADTH);
   if (!stack_buf) {
-    bpfj_shared_ptr_release(&snapshot_ptr);
+    bpfj_shared_ptr_release(out);
     return -ENOMEM;
   }
   struct rb_node* __arena* nodes = stack_buf;
@@ -158,7 +192,8 @@ static __noinline long bpfj_mount_snapshot_build(
   // A concurrent mount-tree update can change both the traversal shape and
   // nr_mounts. Retry any result from a stale generation, including apparent
   // breadth overflow, rather than reporting a permanent policy error.
-  if (generation != bpfj_mount_seqcount()) {
+  if ((mount_sequence & 1) != 0 || mount_sequence != bpfj_mount_seqcount() ||
+      mount_generation != BPF_CORE_READ(ns, event)) {
     ret = -EBUSY;
   } else if (ret == 0 && visited != mounts) {
     ret = -EIO;
@@ -167,10 +202,9 @@ static __noinline long bpfj_mount_snapshot_build(
     ret = bpfj_const_map_seal(&snapshot->roots);
   }
   if (ret < 0) {
-    bpfj_shared_ptr_release(&snapshot_ptr);
+    bpfj_shared_ptr_release(out);
     return ret;
   }
-  *out = snapshot_ptr;
   return 0;
 }
 
@@ -184,7 +218,7 @@ __noinline long bpfj_mount_load(
     struct bpfj_shared_ptr __arena* out __arg_arena) {
   descriptor->ns_ino = 0;
   descriptor->namespace_addr = 0;
-  descriptor->mount_lock = 0;
+  descriptor->mount_generation = 0;
   out->buf = NULL;
   out->refcount = NULL;
   if (!cache) {
@@ -202,7 +236,7 @@ __noinline long bpfj_mount_load(
   }
 
   __u64 ns_ino = BPF_CORE_READ(ns, ns.inum);
-  __u32 generation = bpfj_mount_seqcount();
+  __u64 generation = BPF_CORE_READ(ns, event);
   {
     BPFJ_LOCK_GUARD(guard, &cache->lock);
     if (!BPFJ_LOCK_IS_ACQUIRED(guard)) {
@@ -210,22 +244,29 @@ __noinline long bpfj_mount_load(
     }
     struct bpfj_mount_snapshot __arena* snapshot = cache->snapshot.buf;
     if (cache->ns_ino == ns_ino && snapshot &&
-        snapshot->mount_lock == generation) {
+        snapshot->mount_generation == generation &&
+        generation == BPF_CORE_READ(ns, event)) {
       struct bpfj_shared_ptr acquired =
           bpfj_shared_ptr_acquire_arena(&cache->snapshot);
       out->buf = acquired.buf;
       out->refcount = acquired.refcount;
       descriptor->ns_ino = ns_ino;
-      descriptor->mount_lock = generation;
+      descriptor->mount_generation = generation;
       descriptor->namespace_addr = (uintptr_t)ns;
       return (long)ns_ino;
     }
   }
 
   struct bpfj_shared_ptr built = {0};
-  long ret = bpfj_mount_snapshot_build((uintptr_t)ns, generation, &built);
+  __u32 mount_sequence = bpfj_mount_seqcount();
+  long ret = bpfj_mount_snapshot_build(
+      (uintptr_t)ns, generation, mount_sequence, &built);
   if (ret < 0) {
     return ret;
+  }
+  if (generation != BPF_CORE_READ(ns, event)) {
+    bpfj_shared_ptr_release(&built);
+    return -EBUSY;
   }
 
   struct bpfj_shared_ptr retired = {0};
@@ -236,8 +277,12 @@ __noinline long bpfj_mount_load(
       return -EBUSY;
     }
     struct bpfj_mount_snapshot __arena* current = cache->snapshot.buf;
+    if (generation != BPF_CORE_READ(ns, event)) {
+      bpfj_shared_ptr_release(&built);
+      return -EBUSY;
+    }
     if (cache->ns_ino == ns_ino && current &&
-        current->mount_lock == generation) {
+        current->mount_generation == generation) {
       struct bpfj_shared_ptr acquired =
           bpfj_shared_ptr_acquire_arena(&cache->snapshot);
       out->buf = acquired.buf;
@@ -259,7 +304,7 @@ __noinline long bpfj_mount_load(
   bpfj_shared_ptr_release(&built);
 
   descriptor->ns_ino = ns_ino;
-  descriptor->mount_lock = generation;
+  descriptor->mount_generation = generation;
   descriptor->namespace_addr = (uintptr_t)ns;
   return (long)ns_ino;
 }

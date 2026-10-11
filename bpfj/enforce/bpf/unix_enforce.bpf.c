@@ -22,7 +22,7 @@
 #define S_IFMT 0170000
 #define S_IFSOCK 0140000
 
-struct bpfj_mount_cache __arena bpfj_unix_mount_cache;
+struct bpfj_mount_cache __arena* bpfj_unix_mount_cache;
 
 static __noinline bool bpfj_unix_path_allowed(
     struct bpfj_file_match_cached_state __arena* state,
@@ -191,7 +191,7 @@ static __always_inline int bpfj_unix_enforce_path(
     const long count = BPFJ_FILE_MATCH_CACHED(
         state,
         matcher,
-        &bpfj_unix_mount_cache,
+        bpfj_unix_mount_cache,
         dentry,
         &uuid,
         bpfj_file_match_cached_bind_var_array,
