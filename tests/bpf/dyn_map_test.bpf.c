@@ -10,17 +10,18 @@
 #include "bpfj/lib/bpf/dyn_map.h"
 #include "bpfj/lib/bpf/heap.h"
 
+// DMT_OP_* avoids colliding with kernel OP_* macros in vmlinux.h.
 enum {
-  OP_LOOKUP = 0,
-  OP_INSERT = 1,
-  OP_DELETE = 2,
-  OP_DESTROY = 3,
-  OP_INSERT_SHARED = 4,
-  OP_DELETE_IF_UNIQUE = 5,
-  OP_INSERT_FIXED = 6,
+  DMT_OP_LOOKUP = 0,
+  DMT_OP_INSERT = 1,
+  DMT_OP_DELETE = 2,
+  DMT_OP_DESTROY = 3,
+  DMT_OP_INSERT_SHARED = 4,
+  DMT_OP_DELETE_IF_UNIQUE = 5,
+  DMT_OP_INSERT_FIXED = 6,
 };
 
-const volatile __u32 op = OP_LOOKUP;
+const volatile __u32 op = DMT_OP_LOOKUP;
 const volatile __u64 key = 0;
 const volatile __u64 key_tail = 0; // filler words of `key`; see test_key
 const volatile __u64 val = 0;
@@ -233,12 +234,12 @@ int test_dyn_map(void* ctx) {
   // release the value now and the key once the op is done with it, so neither
   // shows up inside the bracket below.
   bool op_takes_entry =
-      op == OP_INSERT || op == OP_INSERT_SHARED || op == OP_INSERT_FIXED;
+      op == DMT_OP_INSERT || op == DMT_OP_INSERT_SHARED || op == DMT_OP_INSERT_FIXED;
   if (!op_takes_entry) {
     BPFJ_HEAP_FREE(op_val);
     op_val = NULL;
   }
-  if (op == OP_DESTROY) {
+  if (op == DMT_OP_DESTROY) {
     // Nothing to key, and holding it would show up as something the teardown
     // failed to give back.
     BPFJ_HEAP_FREE(op_key);
@@ -254,17 +255,17 @@ int test_dyn_map(void* ctx) {
   pre_capacity = map->capacity;
   used_before = ctrl->current_used;
 
-  if (op == OP_INSERT) {
+  if (op == DMT_OP_INSERT) {
     ret = bpfj_dyn_map_insert(map, op_key, op_val);
-  } else if (op == OP_DELETE) {
+  } else if (op == DMT_OP_DELETE) {
     ret = bpfj_dyn_map_delete(map, op_key);
-  } else if (op == OP_DESTROY) {
+  } else if (op == DMT_OP_DESTROY) {
     bpfj_dyn_map_destroy(map);
-  } else if (op == OP_INSERT_SHARED) {
+  } else if (op == DMT_OP_INSERT_SHARED) {
     ret = bpfj_dyn_map_insert_shared(map, op_key, op_val, &ref);
-  } else if (op == OP_DELETE_IF_UNIQUE) {
+  } else if (op == DMT_OP_DELETE_IF_UNIQUE) {
     ret = bpfj_dyn_map_delete_if_unique(map, op_key);
-  } else if (op == OP_INSERT_FIXED) {
+  } else if (op == DMT_OP_INSERT_FIXED) {
     ret = bpfj_dyn_map_insert_fixed(map, op_key, op_val);
   }
 
@@ -290,7 +291,7 @@ int test_dyn_map(void* ctx) {
 
   __u32 ci = 0;
   bpf_for(ci, 0, DYN_MAP_TEST_MAX_SEED) {
-    if (ci >= seed_count || op == OP_DESTROY) {
+    if (ci >= seed_count || op == DMT_OP_DESTROY) {
       break; // nothing to look up in a map that has been torn down
     }
     if (test_check_seed(
