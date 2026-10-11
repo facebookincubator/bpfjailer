@@ -230,8 +230,10 @@ Most operation gates are denied when a role has no corresponding option. The
 `*-pod` options allow resources from the same pod, `*-roles` adds the named
 owner roles, and `*-any` opens that operation completely. `keyring-own` is the
 role-scoped counterpart because fs-verity keyrings belong to roles rather than
-pods. `enroll-roles` names the only roles bpfjsrv may add; without it enrollment
-through bpfjsrv is denied. Unix pathname, mount, and unmount operations are
+pods. `enroll-roles` names the roles a task may acquire through bpfjsrv or an
+executable's `user.bpfj.policy.exec` xattr; `enroll-any` permits any target.
+Without enrollment permission, both paths are denied for that role. A forbidden
+xattr enrollment denies exec rather than running without the declared role. Unix pathname, mount, and unmount operations are
 denied when their option is absent or no path matches. Abstract Unix-socket
 names remain opt-in filters, so an unconfigured or unmatched abstract name is
 allowed.

@@ -40,7 +40,14 @@ access = "read-write"
 `base-role` is applied to every process that exists when the jailer attaches;
 descendants inherit it. A binary can claim another role at exec through the
 `user.bpfj.policy.exec` xattr, and explicit enrollment can stack more roles on
-a task. `vars` is the allowlist of variable names an enrollment may set.
+a task. Xattr enrollment checks the existing roles' `enroll-roles` or
+`enroll-any` permissions before adding the new pod; denial returns `EACCES`
+from exec. Each consulted role must permit, walking newest first and stopping
+after a permitting `override-stacked` role. An empty allowlist denies even
+same-role enrollment, while an unjailed task has no source-role restrictions.
+`unpriv-enroll` applies only to non-root server requests, not xattr enrollment.
+Existing policies may need enrollment permission added for xattr-bearing
+executables they run. `vars` is the allowlist of variable names an enrollment may set.
 
 ## General authorization
 
@@ -79,7 +86,7 @@ never short-circuits the target-role checks for `kill` or `ptrace`.
 | POSIX shared memory | `shm-posix-pod`, `shm-posix-roles`, `shm-posix-any`, `shm-posix-pattern` | Gate open, receipt, mapping, protection, truncation and unlink by owner or name pattern. |
 | Unix sockets | `unix-bind`, `unix-connect`, `unix-dgram` | `{ path, allow }` rules with boolean `allow` values for pathname or abstract socket names. Missing or unmatched pathname policy denies; unmatched abstract names are allowed. |
 | Mounts | `mount`, `mount-any`, `umount`, `umount-any` | Boolean `{ path, allow }` rules; allowed mount rules add `filesystems`. Missing or unmatched policy denies; the `*-any` options open the corresponding operation. |
-| Enrollment | `unpriv-enroll`, `enroll-roles`, `enroll-any` | Open a role to a non-root caller and constrain which further roles a caller may request through `bpfjsrv`. |
+| Enrollment | `unpriv-enroll`, `enroll-roles`, `enroll-any` | Open a role to a non-root caller and constrain which further roles a task may acquire through `bpfjsrv` or executable xattrs. |
 
 Role and certificate references are validated when the policy is parsed.
 Unknown role options, duplicate entries and mutually exclusive scopes are
