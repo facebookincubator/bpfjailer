@@ -17,13 +17,13 @@ using namespace bpfjailer;
 namespace {
 
 enum {
-  OP_LOOKUP = 0,
-  OP_INSERT = 1,
-  OP_DELETE = 2,
-  OP_DESTROY = 3,
-  OP_INSERT_SHARED = 4,
-  OP_DELETE_IF_UNIQUE = 5,
-  OP_INSERT_FIXED = 6,
+  DYN_MAP_OP_LOOKUP = 0,
+  DYN_MAP_OP_INSERT = 1,
+  DYN_MAP_OP_DELETE = 2,
+  DYN_MAP_OP_DESTROY = 3,
+  DYN_MAP_OP_INSERT_SHARED = 4,
+  DYN_MAP_OP_DELETE_IF_UNIQUE = 5,
+  DYN_MAP_OP_INSERT_FIXED = 6,
 };
 
 // One userspace-seeded entry. `tail` fills every key word after the first, so a
@@ -36,7 +36,7 @@ struct DynMapSeed {
 };
 
 struct DynMapConfig {
-  __u32 op = OP_LOOKUP;
+  __u32 op = DYN_MAP_OP_LOOKUP;
   __u64 key = 0;
   __u64 key_tail = 0;
   __u64 val = 0;
@@ -149,7 +149,7 @@ void runDynMap(const DynMapConfig& cfg, DynMapResult& out) {
 
 TEST(DynMap, SeededLookupHit) {
   DynMapConfig cfg;
-  cfg.op = OP_LOOKUP;
+  cfg.op = DYN_MAP_OP_LOOKUP;
   cfg.key = 2;
   cfg.seed = {
       {.key = 1, .val = 10}, {.key = 2, .val = 20}, {.key = 3, .val = 30}};
@@ -162,7 +162,7 @@ TEST(DynMap, SeededLookupHit) {
 
 TEST(DynMap, SeededLookupMiss) {
   DynMapConfig cfg;
-  cfg.op = OP_LOOKUP;
+  cfg.op = DYN_MAP_OP_LOOKUP;
   cfg.key = 99;
   cfg.seed = {
       {.key = 1, .val = 10}, {.key = 2, .val = 20}, {.key = 3, .val = 30}};
@@ -176,7 +176,7 @@ TEST(DynMap, ZeroKeyIsValid) {
   // An all-zero key is legal; the explicit slot state must distinguish it from
   // empty.
   DynMapConfig cfg;
-  cfg.op = OP_LOOKUP;
+  cfg.op = DYN_MAP_OP_LOOKUP;
   cfg.key = 0;
   cfg.seed = {{.key = 0, .val = 42}, {.key = 1, .val = 10}};
 
@@ -192,7 +192,7 @@ TEST(DynMap, MultiWordKeysCompareEveryWord) {
   // hand back the wrong entry -- and the near miss below would hit.
   DynMapConfig cfg;
   cfg.key_size = 2 * sizeof(__u64);
-  cfg.op = OP_LOOKUP;
+  cfg.op = DYN_MAP_OP_LOOKUP;
   cfg.seed = {
       {.key = 5, .tail = 1, .val = 10},
       {.key = 5, .tail = 2, .val = 20},
@@ -239,7 +239,7 @@ TEST(DynMap, InitRejectsEntrySizesItCannotHandle) {
 TEST(DynMap, BpfInsertThenLookup) {
   DynMapConfig cfg;
   cfg.init_capacity = 8;
-  cfg.op = OP_INSERT;
+  cfg.op = DYN_MAP_OP_INSERT;
   cfg.key = 5;
   cfg.val = 55;
 
@@ -261,7 +261,7 @@ TEST(DynMap, InsertReplacingAKeyReleasesTheDuplicate) {
   // value, leaving the duplicate key and the displaced value for the map to
   // release: one entry's worth of arena goes back.
   DynMapConfig cfg;
-  cfg.op = OP_INSERT;
+  cfg.op = DYN_MAP_OP_INSERT;
   cfg.seed = {{.key = 5, .val = 55}};
   cfg.key = 5;
   cfg.val = 66;
@@ -277,7 +277,7 @@ TEST(DynMap, InsertReplacingAKeyReleasesTheDuplicate) {
 
 TEST(DynMap, BpfDeleteRemovesKey) {
   DynMapConfig cfg;
-  cfg.op = OP_DELETE;
+  cfg.op = DYN_MAP_OP_DELETE;
   cfg.key = 7;
   cfg.seed = {{.key = 7, .val = 77}, {.key = 8, .val = 88}};
 
@@ -298,7 +298,7 @@ TEST(DynMap, BpfDeleteRemovesKey) {
 // rather than a copy: two holders, one block.
 TEST(DynMap, InsertSharedHandsBackAReferenceToTheStoredValue) {
   DynMapConfig cfg;
-  cfg.op = OP_INSERT_SHARED;
+  cfg.op = DYN_MAP_OP_INSERT_SHARED;
   cfg.key = 5;
   cfg.val = 55;
 
@@ -313,7 +313,7 @@ TEST(DynMap, InsertSharedHandsBackAReferenceToTheStoredValue) {
 
 TEST(DynMap, DeleteIfUniqueDeletesAnEntryOnlyTheMapHolds) {
   DynMapConfig cfg;
-  cfg.op = OP_DELETE_IF_UNIQUE;
+  cfg.op = DYN_MAP_OP_DELETE_IF_UNIQUE;
   cfg.key = 7;
   cfg.seed = {{.key = 7, .val = 77}};
 
@@ -328,7 +328,7 @@ TEST(DynMap, DeleteIfUniqueDeletesAnEntryOnlyTheMapHolds) {
 // Held elsewhere, the entry stays indexed and nothing is freed.
 TEST(DynMap, DeleteIfUniqueLeavesAnEntryHeldElsewhere) {
   DynMapConfig cfg;
-  cfg.op = OP_DELETE_IF_UNIQUE;
+  cfg.op = DYN_MAP_OP_DELETE_IF_UNIQUE;
   cfg.key = 7;
   cfg.hold_ref = true;
   cfg.seed = {{.key = 7, .val = 77}};
@@ -344,7 +344,7 @@ TEST(DynMap, DeleteIfUniqueLeavesAnEntryHeldElsewhere) {
 
 TEST(DynMap, DeleteIfUniqueOfAMissingKey) {
   DynMapConfig cfg;
-  cfg.op = OP_DELETE_IF_UNIQUE;
+  cfg.op = DYN_MAP_OP_DELETE_IF_UNIQUE;
   cfg.key = 9;
   cfg.seed = {{.key = 7, .val = 77}};
 
@@ -366,7 +366,7 @@ TEST(DynMap, InsertFixedNeverGrows) {
       {.key = 5, .val = 1005},
   };
   cfg.seed_capacity = 8;
-  cfg.op = OP_INSERT_FIXED;
+  cfg.op = DYN_MAP_OP_INSERT_FIXED;
   cfg.key = 6;
   cfg.val = 1006;
 
@@ -393,7 +393,7 @@ TEST(DynMap, InsertTriggersResizeAndPreservesEntries) {
       {.key = 5, .val = 1005},
   };
   cfg.seed_capacity = 8;
-  cfg.op = OP_INSERT;
+  cfg.op = DYN_MAP_OP_INSERT;
   cfg.key = 6;
   cfg.val = 1006;
   cfg.key2 = 3; // seeded entry that must survive the rehash
@@ -431,7 +431,7 @@ TEST(DynMap, UpdateAtThresholdSucceeds) {
       {.key = 5, .val = 1005},
   };
   cfg.seed_capacity = 8;
-  cfg.op = OP_INSERT;
+  cfg.op = DYN_MAP_OP_INSERT;
   cfg.key = 3; // already seeded
   cfg.val = 7777; // overwrite its value
 
@@ -452,7 +452,7 @@ TEST(DynMap, LargeResizePreservesEntries) {
   for (__u64 k = 0; k < 192; ++k) {
     cfg.seed.push_back({.key = k, .val = k + 1000});
   }
-  cfg.op = OP_INSERT;
+  cfg.op = DYN_MAP_OP_INSERT;
   cfg.key = 1000;
   cfg.val = 9999;
   cfg.key2 = 100; // seeded entry that must survive the 192-entry rehash
@@ -483,7 +483,7 @@ TEST(DynMap, GrowFreesOldBuffer) {
       {.key = 5, .val = 1005},
   };
   cfg.seed_capacity = 8;
-  cfg.op = OP_INSERT;
+  cfg.op = DYN_MAP_OP_INSERT;
   cfg.key = 6;
   cfg.val = 1006;
   cfg.key2 = 3; // seeded entry that must survive the rehash
@@ -515,7 +515,7 @@ TEST(DynMap, GrowKeepsEveryEntry) {
   for (__u64 k = 0; k < 100; ++k) {
     cfg.seed.push_back({.key = (k * 7) + 1, .val = k + 500});
   }
-  cfg.op = OP_LOOKUP;
+  cfg.op = DYN_MAP_OP_LOOKUP;
   cfg.key = 8; // seeded (k=1)
 
   DynMapResult out;
@@ -536,7 +536,7 @@ TEST(DynMap, DestroyReleasesEverythingAfterAGrow) {
   for (__u64 k = 0; k < 100; ++k) {
     cfg.seed.push_back({.key = (k * 7) + 1, .val = k + 500});
   }
-  cfg.op = OP_DESTROY;
+  cfg.op = DYN_MAP_OP_DESTROY;
 
   DynMapResult out;
   runDynMap(cfg, out);
