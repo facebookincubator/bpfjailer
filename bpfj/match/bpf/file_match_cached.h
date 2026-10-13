@@ -75,9 +75,14 @@ static __always_inline volatile __u64* bpfj_file_match_cached_stats_for_cpu(
 //
 // Its own guard rather than BPFJ_HEAP_ALLOC_GUARD's, because the state owns
 // vectors: the plain guard frees the struct, which would strand their buffers.
-#define BPFJ_FILE_MATCH_CACHED_ALLOC(_name)                          \
-  __attribute__((cleanup(bpfj_file_match_cached_state_free))) struct \
-      bpfj_file_match_cached_state __arena* _name =                  \
+// Callers may wrap teardown by defining BPFJ_FILE_MATCH_CACHED_CLEANUP.
+#ifndef BPFJ_FILE_MATCH_CACHED_CLEANUP
+#define BPFJ_FILE_MATCH_CACHED_CLEANUP bpfj_file_match_cached_state_free
+#endif
+
+#define BPFJ_FILE_MATCH_CACHED_ALLOC(_name)                       \
+  __attribute__((cleanup(BPFJ_FILE_MATCH_CACHED_CLEANUP))) struct \
+      bpfj_file_match_cached_state __arena* _name =               \
           bpfj_file_match_cached_state_alloc()
 
 #define _BPFJ_FILE_MATCH_CACHED(                                  \
@@ -240,6 +245,8 @@ struct bpfj_file_match_cached_state {
   // retry use bpf_loop without a second numeric iterator in the walk frame.
   long retry_result;
   long component_result;
+  // Opaque per-invocation scratch reserved for the allocating caller.
+  __u64 caller_data;
   __u32 walk_depth;
   __u32 checkpoint_depth;
   bool completed_cycle;
@@ -388,6 +395,7 @@ static __noinline void __arena* bpfj_file_match_cached_state_alloc(void) {
   state->ancestry_bloom[1] = 0;
   state->retry_result = 0;
   state->component_result = 0;
+  state->caller_data = 0;
   state->walk_depth = 0;
   state->checkpoint_depth = 0;
   state->completed_cycle = false;
