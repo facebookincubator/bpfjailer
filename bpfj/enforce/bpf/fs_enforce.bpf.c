@@ -31,11 +31,14 @@ static __always_inline bool bpfj_fs_mode_allowed(__u32 granted, __u32 wanted) {
   return true;
 }
 
-static __noinline bool bpfj_fs_match_allowed(
-    struct bpfj_file_match_cached_state __arena* state,
+// GLOBAL function: verify path-entry selection independently from the policy
+// walk while returning only the scalar decision supported by BPF subprograms.
+__noinline bool bpfj_fs_match_allowed(
+    struct bpfj_file_match_cached_state __arena* state __arg_arena,
     __u32 wanted,
     long count) {
-  __s32 bestPos = -1;
+  __s32 best_pos = -1;
+  __u8 best_specificity = 0;
   struct bpfj_fs_path_entry* best = NULL;
   __u32 i;
   bpf_for(i, 0, BPFJ_FILE_MATCH_MAX_ITERS) {
@@ -47,8 +50,14 @@ static __noinline bool bpfj_fs_match_allowed(
       continue;
     }
     const __s32 pos = BPFJ_FILE_MATCH_CACHED_GET_POS(state, i);
-    if (pos > bestPos) {
-      bestPos = pos;
+    const bool denied = !bpfj_fs_mode_allowed(entry->mode, wanted);
+    const bool best_denied = best && !bpfj_fs_mode_allowed(best->mode, wanted);
+    if (pos > best_pos ||
+        (pos == best_pos && entry->specificity > best_specificity) ||
+        (pos == best_pos && entry->specificity == best_specificity &&
+         denied && !best_denied)) {
+      best_pos = pos;
+      best_specificity = entry->specificity;
       best = entry;
     }
   }
