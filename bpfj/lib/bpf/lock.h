@@ -70,23 +70,27 @@ static __always_inline void bpfj_arena_clear_pending(
   WRITE_ONCE(lock->pending, 0);
 }
 
-static __always_inline __u32
-bpfj_arena_fetch_set_pending(struct bpfj_arena_spinlock __arena* lock) {
+static __always_inline __u32 bpfj_arena_fetch_set_pending(
+    struct bpfj_arena_spinlock __arena* lock,
+    int* announced) {
   __u32 old = atomic_read(&lock->val);
   do {
     const __u32 next = old | BPFJ_PENDING_VAL;
     cond_break_label(failed);
     if (atomic_try_cmpxchg_acquire(&lock->val, &old, next)) {
+      *announced = 1;
       return old;
     }
   } while (true);
 failed:
+  *announced = 0;
   return old;
 }
 
 static __always_inline int bpfj_arena_spin_lock_slowpath(
     struct bpfj_arena_spinlock __arena* lock,
     __u32 val) {
+  int announced = 0;
   if (val == BPFJ_PENDING_VAL) {
     int count = 1;
     val = atomic_cond_read_relaxed_label(
@@ -96,7 +100,10 @@ static __always_inline int bpfj_arena_spin_lock_slowpath(
     return -EBUSY;
   }
 
-  val = bpfj_arena_fetch_set_pending(lock);
+  val = bpfj_arena_fetch_set_pending(lock, &announced);
+  if (!announced) {
+    return -EBUSY;
+  }
   if (val & ~BPFJ_LOCKED_MASK) {
     if (!(val & BPFJ_PENDING_MASK)) {
       bpfj_arena_clear_pending(lock);
@@ -109,7 +116,12 @@ static __always_inline int bpfj_arena_spin_lock_slowpath(
   WRITE_ONCE(lock->locked_pending, BPFJ_LOCKED_VAL);
   return 0;
 failed:
-  // Bounded waiting is a transient miss just like observing a held lock.
+  // Bounded waiting is a transient miss just like observing a held lock. A
+  // timeout after announcing must also withdraw the pending bit: left set, it
+  // wedges the word for every later acquire on both sides.
+  if (announced) {
+    bpfj_arena_clear_pending(lock);
+  }
   return -EBUSY;
 }
 

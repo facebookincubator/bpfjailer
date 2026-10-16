@@ -14,6 +14,8 @@
 #define LOCK_CMD_OBSERVE 1
 #define LOCK_CMD_LOCK_BUMP_UNLOCK 2
 #define LOCK_CMD_INIT 3
+#define LOCK_CMD_SLOWPATH_ON_HELD_LOCK 4
+#define LOCK_CMD_SLOWPATH_ON_FREE_LOCK 5
 
 // Both allocated from the arena heap and published by userspace before attach.
 struct bpfj_lock __arena* test_lock;
@@ -42,6 +44,26 @@ int test_lock_cmd(void* ctx) {
     locked_seen = bpfj_lock_is_locked(test_lock);
   } else if (c == LOCK_CMD_INIT) {
     bpfj_lock_init(test_lock);
+  } else if (c == LOCK_CMD_SLOWPATH_ON_HELD_LOCK) {
+    // Drive the arena slow path the way the irqsave fast-path failure does.
+    // The caller holds the word, so the bounded wait must time out; a timeout
+    // must not leave pending residue behind.
+    int err = bpfj_arena_spin_lock_slowpath(
+        bpfj_lock_qspinlock(test_lock), BPFJ_LOCKED_VAL);
+    locked = (err == 0);
+    if (!err) {
+      *counter += 1;
+      bpfj_arena_spin_unlock(bpfj_lock_qspinlock(test_lock));
+    }
+  } else if (c == LOCK_CMD_SLOWPATH_ON_FREE_LOCK) {
+    // Slow path entered with the word free, as the irqsave fast-path failure
+    // observes it after losing a race: it must claim the lock.
+    int err = bpfj_arena_spin_lock_slowpath(bpfj_lock_qspinlock(test_lock), 0);
+    locked = (err == 0);
+    if (!err) {
+      *counter += 1;
+      bpfj_arena_spin_unlock(bpfj_lock_qspinlock(test_lock));
+    }
   } else {
     BPFJ_LOCK_GUARD(test_guard, test_lock);
     locked = BPFJ_LOCK_IS_ACQUIRED(test_guard);

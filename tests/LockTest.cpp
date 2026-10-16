@@ -23,6 +23,8 @@ constexpr __u32 kCmdNone = 0;
 constexpr __u32 kCmdObserve = 1;
 constexpr __u32 kCmdLockBumpUnlock = 2;
 constexpr __u32 kCmdInit = 3;
+constexpr __u32 kCmdSlowpathOnHeldLock = 4;
+constexpr __u32 kCmdSlowpathOnFreeLock = 5;
 
 // Stands in for whatever the allocator left in a recycled block: bpfj_lock sits
 // at the start of its payload, and free() writes next_free/prev_free there.
@@ -236,6 +238,77 @@ TEST(Lock, BpfLeavesLockAcquirableByUserspace) {
   ASSERT_EQ(skel_->bss().locked, 0);
   lock::unlock(*lock_);
 
+  ASSERT_TRUE(lock::tryLock(*lock_));
+  lock::unlock(*lock_);
+}
+
+// A bounded slow-path wait that times out must not wedge the word: with
+// userspace holding it, BPF cannot acquire, and the word must be acquirable
+// again once userspace lets go. A pending bit left set by the timeout survives
+// the unlock and fails every later acquire.
+TEST(Lock, SlowpathTimeoutOnHeldLockLeavesNoPendingResidue) {
+  LockFixture fixture;
+  [[maybe_unused]] auto& skel_ = fixture.skel_;
+  [[maybe_unused]] auto*& lock_ = fixture.lock_;
+  [[maybe_unused]] auto*& counter_ = fixture.counter_;
+  [[maybe_unused]] auto runInBpf = [&](const __u32 cmd) {
+    fixture.runInBpf(cmd);
+  };
+  ASSERT_TRUE(lock::tryLock(*lock_));
+
+  runInBpf(kCmdSlowpathOnHeldLock);
+  ASSERT_EQ(skel_->bss().locked, 0);
+  ASSERT_TRUE(lock::isLocked(*lock_));
+  lock::unlock(*lock_);
+
+  ASSERT_FALSE(lock::isLocked(*lock_));
+  ASSERT_TRUE(lock::tryLock(*lock_));
+  lock::unlock(*lock_);
+}
+
+// The slow path entered on a free word claims the lock: the acquire reports
+// success, the critical section runs exactly once, and the word is handed back
+// free. Guards the claim path the timeout fix sits beside.
+TEST(Lock, SlowpathOnFreeWordAcquiresAndHandsBackCleanWord) {
+  LockFixture fixture;
+  [[maybe_unused]] auto& skel_ = fixture.skel_;
+  [[maybe_unused]] auto*& lock_ = fixture.lock_;
+  [[maybe_unused]] auto*& counter_ = fixture.counter_;
+  [[maybe_unused]] auto runInBpf = [&](const __u32 cmd) {
+    fixture.runInBpf(cmd);
+  };
+  runInBpf(kCmdSlowpathOnFreeLock);
+  ASSERT_EQ(skel_->bss().locked, 1);
+  ASSERT_EQ(*counter_, 1U);
+  ASSERT_FALSE(lock::isLocked(*lock_));
+  ASSERT_TRUE(lock::tryLock(*lock_));
+  lock::unlock(*lock_);
+}
+
+// Contention must not accumulate residue: timing out twenty times in a row
+// leaves the word exactly as found, still owned by userspace and acquirable
+// once released. A bit that stuck on the Nth wait would wedge the heap the
+// same way a single leak does.
+TEST(Lock, RepeatedSlowpathTimeoutsLeaveNoAccumulatedResidue) {
+  LockFixture fixture;
+  [[maybe_unused]] auto& skel_ = fixture.skel_;
+  [[maybe_unused]] auto*& lock_ = fixture.lock_;
+  [[maybe_unused]] auto*& counter_ = fixture.counter_;
+  [[maybe_unused]] auto runInBpf = [&](const __u32 cmd) {
+    fixture.runInBpf(cmd);
+  };
+  ASSERT_TRUE(lock::tryLock(*lock_));
+
+  constexpr int kRounds = 20;
+  for (int i = 0; i < kRounds; ++i) {
+    runInBpf(kCmdSlowpathOnHeldLock);
+    ASSERT_EQ(skel_->bss().locked, 0);
+  }
+  ASSERT_TRUE(lock::isLocked(*lock_));
+  ASSERT_EQ(*counter_, 0U);
+  lock::unlock(*lock_);
+
+  ASSERT_FALSE(lock::isLocked(*lock_));
   ASSERT_TRUE(lock::tryLock(*lock_));
   lock::unlock(*lock_);
 }
