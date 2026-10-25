@@ -212,8 +212,6 @@ bpfj_var_serialize(const struct bpfj_var* var, char* dest, size_t dest_size) {
     default:
       return -EINVAL;
   }
-
-  return 0;
 }
 
 // Deserialize a variable from a string. Can't be called from bpf
