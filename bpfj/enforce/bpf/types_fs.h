@@ -7,4 +7,5 @@
 
 struct bpfj_fs_path_entry {
   __u32 mode;
+  __u8 specificity;
 };
