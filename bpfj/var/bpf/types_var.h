@@ -248,8 +248,6 @@ bpfj_var_deserialize(const char* src, size_t src_size, struct bpfj_var* var) {
     default:
       return -EINVAL;
   }
-
-  return 0;
 }
 #endif
 
