@@ -130,7 +130,10 @@ static __always_inline bool bpfj_bpf_owning_role(
     }
     if (policy->bpf_mode != BPFJ_POLICY_DENY &&
         !(policy->flags & BPFJ_POLICY_BPF_UNTRACKED)) {
-      __builtin_memcpy(&out->role, &policy->role_id, sizeof(out->role));
+      __builtin_memcpy(
+          &out->role,
+          (const struct bpfj_role_id*)&policy->role_id,
+          sizeof(out->role));
       bpfj_pod_read_uuid(&out->pod, pod);
       out->policy = policy;
       return true;

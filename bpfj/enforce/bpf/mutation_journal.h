@@ -94,11 +94,12 @@ static __always_inline void bpfj_mutation_append(
   record->key[0] = key0;
   record->key[1] = key1;
   record->object_id = object_id;
+  // `record` is in the arena. bpfj_pod_read_role_id() explains the casts.
   if (role) {
-    __builtin_memcpy(&record->role, role, sizeof(*role));
+    __builtin_memcpy((struct bpfj_role_id*)&record->role, role, sizeof(*role));
   }
   if (pod) {
-    __builtin_memcpy(&record->pod, pod, sizeof(*pod));
+    __builtin_memcpy((struct bpfj_uuid*)&record->pod, pod, sizeof(*pod));
   }
   record->committed = 1;
   // Publish the sequence only after the complete record is visible.

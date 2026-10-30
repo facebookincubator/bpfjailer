@@ -186,15 +186,17 @@ int BPF_PROG(
     return -ENOMEM;
   }
 
-  __builtin_memset(pod, 0, sizeof(*pod));
+  // `pod` is in the arena. bpfj_pod_read_role_id() explains the casts.
+  bpfj_pod_zero(pod);
   pod->var_array.count = 0;
   pod->var_array.vars = NULL;
-  __builtin_memcpy(&pod->role_id, role_id, sizeof(pod->role_id));
+  __builtin_memcpy(
+      (struct bpfj_role_id*)&pod->role_id, role_id, sizeof(pod->role_id));
   pod->policy = policy;
 
   struct bpfj_uuid uuid = {};
   bpfj_make_uuid4(&uuid);
-  __builtin_memcpy(&pod->uuid, &uuid, sizeof(pod->uuid));
+  __builtin_memcpy((struct bpfj_uuid*)&pod->uuid, &uuid, sizeof(pod->uuid));
   pod->enrollment_source = BPFJ_ENROLL_XATTR;
   pod->refs = 1;
   pod->creation_time_ns = bpf_ktime_get_ns();
@@ -263,18 +265,22 @@ int bpfj_jailer_seed_base_role(struct bpf_iter__task* ctx) {
       return 0;
     }
 
-    __builtin_memset(new_pod, 0, sizeof(*new_pod));
+    bpfj_pod_zero(new_pod);
     struct bpfj_role_id role_id = {};
     __builtin_memcpy(
         &role_id, (const void*)&bpfj_base_role_id, sizeof(role_id));
-    __builtin_memcpy(&new_pod->role_id, &role_id, sizeof(new_pod->role_id));
+    __builtin_memcpy(
+        (struct bpfj_role_id*)&new_pod->role_id,
+        &role_id,
+        sizeof(new_pod->role_id));
     new_pod->policy = bpfj_policy_lookup(&role_id);
     if (!new_pod->policy) {
       return 0;
     }
     struct bpfj_uuid uuid = {};
     bpfj_make_uuid4(&uuid);
-    __builtin_memcpy(&new_pod->uuid, &uuid, sizeof(new_pod->uuid));
+    __builtin_memcpy(
+        (struct bpfj_uuid*)&new_pod->uuid, &uuid, sizeof(new_pod->uuid));
     new_pod->enrollment_source = BPFJ_ENROLL_BASE_ROLE;
     new_pod->creation_time_ns = bpf_ktime_get_ns();
     new_pod->var_array.count = 0;

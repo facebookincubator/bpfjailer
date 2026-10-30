@@ -163,16 +163,30 @@ static __always_inline const struct bpfj_role_policy __arena* bpfj_pod_policy(
   return pod ? pod->policy : NULL;
 }
 
+// Cast each arena operand of __builtin_memcpy or __builtin_memset to a
+// generic pointer. Clang 22 adds these casts itself. Clang 21 builds the fbcode
+// veristat gate, and it casts only arena loads and stores, not mem* operands.
+// Without the cast, the verifier sees the operand as a scalar.
 static __always_inline void bpfj_pod_read_role_id(
     struct bpfj_role_id* out,
     const struct bpfj_pod __arena* pod) {
-  __builtin_memcpy(out, &pod->role_id, sizeof(*out));
+  __builtin_memcpy(
+      out, (const struct bpfj_role_id*)&pod->role_id, sizeof(*out));
 }
 
 static __always_inline void bpfj_pod_read_uuid(
     struct bpfj_uuid* out,
     const struct bpfj_pod __arena* pod) {
-  __builtin_memcpy(out, &pod->uuid, sizeof(*out));
+  __builtin_memcpy(out, (const struct bpfj_uuid*)&pod->uuid, sizeof(*out));
+}
+
+/// @brief Zero a new arena pod. Without the barrier, the optimizer folds the
+/// cast back into a memset on the raw arena pointer. It does this in the
+/// jailer's enrollment paths.
+static __always_inline void bpfj_pod_zero(struct bpfj_pod __arena* pod) {
+  struct bpfj_pod* kern = (struct bpfj_pod*)pod;
+  barrier_var(kern);
+  __builtin_memset(kern, 0, sizeof(*kern));
 }
 
 /// @brief Whether `role_id` terminates a pod-stack walk, so the roles stacked
@@ -278,7 +292,7 @@ static __always_inline struct bpfj_event* bpfj_event_reserve(
   }
 
   ev->type = type;
-  __builtin_memcpy(&ev->pod, pod, sizeof(*pod));
+  __builtin_memcpy(&ev->pod, (const struct bpfj_pod*)pod, sizeof(*pod));
   ev->pid = task->tgid;
   ev->tid = task->pid;
   ev->timestamp_ns = bpf_ktime_get_ns();

@@ -261,11 +261,19 @@ int bpfj_replace_snapshot(struct bpf_iter__task* ctx) {
         .creation_time_ns = pod->creation_time_ns,
         .gc_removal_attempts = pod->gc_removal_attempts,
     };
+    // `pod` is in the arena. bpfj_pod_read_role_id() explains the casts.
     __builtin_memcpy(
-        &snapshot.role_id, &pod->role_id, sizeof(snapshot.role_id));
-    __builtin_memcpy(&snapshot.uuid, &pod->uuid, sizeof(snapshot.uuid));
+        &snapshot.role_id,
+        (const struct bpfj_role_id*)&pod->role_id,
+        sizeof(snapshot.role_id));
     __builtin_memcpy(
-        &snapshot_scratch->pod_id, &pod->pod_id, sizeof(pod->pod_id));
+        &snapshot.uuid,
+        (const struct bpfj_uuid*)&pod->uuid,
+        sizeof(snapshot.uuid));
+    __builtin_memcpy(
+        &snapshot_scratch->pod_id,
+        (const struct bpfj_pod_id*)&pod->pod_id,
+        sizeof(pod->pod_id));
 
     struct seq_file* seq = ctx->meta->seq;
     if (!bpfj_replace_seq_write(seq, &snapshot, sizeof(snapshot)) ||
