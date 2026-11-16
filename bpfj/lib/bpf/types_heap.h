@@ -65,7 +65,7 @@ _Static_assert(
 // The arena's 4 GiB byte window, counted in 4 KiB pages. The kernel counts
 // arena max_entries in native pages instead, so loaders replace this default
 // with bpfj_heap_arena_max_entries() before creating the map.
-#define BPFJ_HEAP_ARENA_MAP_PAGES (1U << 20)
+#define BPFJ_HEAP_ARENA_MAP_PAGES (1U << 16)
 #define BPFJ_HEAP_ARENA_SIZE \
   (1ULL * BPFJ_HEAP_ARENA_MAP_PAGES * BPFJ_HEAP_PAGE_SIZE)
 
