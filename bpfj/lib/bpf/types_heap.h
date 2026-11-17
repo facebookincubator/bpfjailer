@@ -62,9 +62,9 @@ _Static_assert(
     "");
 #endif
 
-// The arena's 4 GiB byte window, counted in 4 KiB pages. The kernel counts
-// arena max_entries in native pages instead, so loaders replace this default
-// with bpfj_heap_arena_max_entries() before creating the map.
+// The arena's byte window, counted in 4 KiB pages. The kernel counts arena
+// max_entries in native pages instead, so loaders replace this default with
+// bpfj_heap_arena_max_entries() before creating the map.
 #define BPFJ_HEAP_ARENA_MAP_PAGES (1U << 16)
 #define BPFJ_HEAP_ARENA_SIZE \
   (1ULL * BPFJ_HEAP_ARENA_MAP_PAGES * BPFJ_HEAP_PAGE_SIZE)
@@ -662,3 +662,45 @@ static __always_inline long bpfj_heap_free_impl(
 
   return 0;
 }
+
+// The arena's declared max_entries. The byte window above never changes. The
+// kernel counts arena max_entries in native pages, so the count that spans
+// that window depends on the page size of the kernel that loads the object.
+// The default is the 4 KiB-page count, which every shipped object declares.
+//
+// A loader that knows the running page size replaces max_entries before it
+// creates the map. veristat does no such thing. It loads whatever the build
+// produced and offers no map-size option, so on a 64 KiB-page kernel the
+// default count spans a larger window than the runtime loader creates.
+//
+// A verifier-only build names the page size of the guest it targets, and the
+// count follows from the window above. Only the page size comes from outside.
+// The window and the division stay here, so one rule governs both sizes, and
+// a build cannot disagree with a loader.
+//
+// Without the override the default arm expands to BPFJ_HEAP_ARENA_MAP_PAGES,
+// the same token the map declaration used before this existed. The override
+// arm takes its own branch rather than a default page-size value, because the
+// divided form carries a different type, and BTF keeps the array type of
+// `__uint(max_entries, ...)`. So every shipped object declares the count it
+// always did.
+#ifndef BPFJ_HEAP_ARENA_DECLARED_PAGE_SIZE
+#define BPFJ_HEAP_ARENA_DECLARED_ENTRIES BPFJ_HEAP_ARENA_MAP_PAGES
+#else
+#define BPFJ_HEAP_ARENA_DECLARED_ENTRIES \
+  ((__u32)(BPFJ_HEAP_ARENA_SIZE / BPFJ_HEAP_ARENA_DECLARED_PAGE_SIZE))
+
+// A page size that does not divide the window would move the arena's size, not
+// just how it is counted. Reject it where it is written rather than at load.
+#ifdef __cplusplus
+static_assert(BPFJ_HEAP_ARENA_DECLARED_PAGE_SIZE > 0);
+static_assert(BPFJ_HEAP_ARENA_SIZE % BPFJ_HEAP_ARENA_DECLARED_PAGE_SIZE == 0);
+static_assert(BPFJ_HEAP_ARENA_DECLARED_ENTRIES > 0);
+#else
+_Static_assert(BPFJ_HEAP_ARENA_DECLARED_PAGE_SIZE > 0, "");
+_Static_assert(
+    BPFJ_HEAP_ARENA_SIZE % BPFJ_HEAP_ARENA_DECLARED_PAGE_SIZE == 0,
+    "");
+_Static_assert(BPFJ_HEAP_ARENA_DECLARED_ENTRIES > 0, "");
+#endif
+#endif

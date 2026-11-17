@@ -22,7 +22,7 @@
 struct {
   __uint(type, BPF_MAP_TYPE_ARENA);
   __uint(map_flags, BPF_F_MMAPABLE);
-  __uint(max_entries, BPFJ_HEAP_ARENA_MAP_PAGES);
+  __uint(max_entries, BPFJ_HEAP_ARENA_DECLARED_ENTRIES);
 } bpfj_heap_arena SEC(".maps");
 
 // kfunc declarations for arena page management.
