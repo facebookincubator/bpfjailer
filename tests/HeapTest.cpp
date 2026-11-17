@@ -55,12 +55,14 @@ void initControl(bpfj_heap_control& ctrl, __u32 arenaSize) {
 } // namespace
 
 TEST(Heap, AddressCapacityIsIndependentOfBackingBudget) {
-  static_assert(BPFJ_HEAP_ARENA_SIZE == (1ULL << 32));
   static_assert(BPFJ_HEAP_MAX_BACKING_SIZE == (32U << 20));
+  static_assert(BPFJ_HEAP_ARENA_SIZE > BPFJ_HEAP_MAX_BACKING_SIZE);
   constexpr std::uintptr_t baseAddress = 0x400000000000ULL;
   void* base = reinterpret_cast<void*>(baseAddress);
   const __u32 offsets[] = {
-      BPFJ_HEAP_MAX_BACKING_SIZE + 4096U, 0x40001000U, 0xffffffffU};
+      BPFJ_HEAP_MAX_BACKING_SIZE + 4096U,
+      BPFJ_HEAP_ARENA_SIZE / 2,
+      BPFJ_HEAP_ARENA_SIZE - 1};
   for (const auto offset : offsets) {
     void* pointer = heap::offsetToPtr(base, offset);
     ASSERT_EQ(reinterpret_cast<std::uintptr_t>(pointer), baseAddress + offset);
@@ -76,17 +78,17 @@ TEST(Heap, AddressCapacityIsIndependentOfBackingBudget) {
   }
 }
 
-// Arena max_entries counts native pages. The entry count, not the byte window,
-// scales with the page size: 64 KiB pages need 65536 entries.
+// Arena max_entries counts native pages, so the entry count scales with the
+// page size while the byte window stays fixed.
 TEST(Heap, ArenaMaxEntriesSpansTheWindowInNativePages) {
   struct Case {
     std::uint64_t pageSize;
     std::uint32_t entries;
   };
   constexpr Case cases[] = {
-      {4096, 1U << 20},
-      {16384, 1U << 18},
-      {65536, 1U << 16},
+      {4096, BPFJ_HEAP_ARENA_SIZE / 4096},
+      {16384, BPFJ_HEAP_ARENA_SIZE / 16384},
+      {65536, BPFJ_HEAP_ARENA_SIZE / 65536},
   };
   constexpr std::uint64_t kKernelArenaCap = 1ULL << 32;
   for (const auto& c : cases) {

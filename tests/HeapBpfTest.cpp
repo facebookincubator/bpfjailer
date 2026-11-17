@@ -445,8 +445,8 @@ TEST(HeapBpf, TestGrowUsesNativePages) {
   ASSERT_EQ(obj->bss().init_ret, 0);
   ASSERT_EQ(obj->bss().done, 1);
 
-  // The kernel counts arena entries in native pages. The byte window stays
-  // 4 GiB.
+  // The kernel counts arena entries in native pages while the configured byte
+  // window stays fixed.
   const long pageSize = ::sysconf(_SC_PAGESIZE);
   ASSERT_GT(pageSize, 0L);
   const auto page = static_cast<std::uint64_t>(pageSize);
@@ -760,7 +760,8 @@ TEST(HeapBpf, TestOpenSizesTheArena) {
       heap::arenaSpansWindow(bpf_map__max_entries(arena), unsupported));
 
   ASSERT_TRUE(detail::sizeHeapArena(detail::heapArenaMaxEntries(65536), set));
-  ASSERT_EQ(bpf_map__max_entries(arena), 1U << 16);
+  ASSERT_EQ(
+      bpf_map__max_entries(arena), BPFJ_HEAP_ARENA_SIZE / std::uint64_t{65536});
   ASSERT_TRUE(heap::arenaSpansWindow(bpf_map__max_entries(arena), 65536));
 
   ASSERT_FALSE(
