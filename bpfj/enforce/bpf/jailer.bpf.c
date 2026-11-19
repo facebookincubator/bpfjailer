@@ -173,6 +173,12 @@ int BPF_PROG(
     return -EINVAL;
   }
 
+  if (!bpfj_gate_enroll_allowed(bpfj_get_current_pid_data(), policy)) {
+    BPFJ_LOG_ERR(EACCES, "Current roles forbid xattr enrollment into %s",
+                 role_id->id);
+    return -EACCES;
+  }
+
   // Only binaries that actually carry the xattr need a pod allocation.
   BPFJ_HEAP_ALLOC_GUARD(struct bpfj_pod, pod);
   if (!pod) {

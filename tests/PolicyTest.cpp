@@ -815,3 +815,31 @@ permissions = ["exec"]
   ASSERT(role.hasExecPaths);
   ASSERT(!role.execAny);
 }
+
+TEST(Policy, EnrollmentTargetsAndExplicitDenialOverrideAny) {
+  auto policy = Policy::parse(R"toml(
+[roles.source]
+enroll-roles = ["worker"]
+[roles.worker]
+any = true
+enroll-roles = []
+[roles.open]
+enroll-any = true
+)toml");
+  ASSERT_OK(policy);
+  ASSERT(policy->roles.at("source").enrollMode == AccessMode::Roles);
+  ASSERT_EQ(policy->roles.at("source").enroll.size(), std::size_t{1});
+  ASSERT_EQ(policy->roles.at("source").enroll.front(), "worker");
+  ASSERT(policy->roles.at("worker").enrollMode == AccessMode::Roles);
+  ASSERT(policy->roles.at("worker").enroll.empty());
+  ASSERT(policy->roles.at("open").enrollMode == AccessMode::Any);
+}
+
+TEST(Policy, EnrollmentListAndAnyAreMutuallyExclusive) {
+  auto policy = Policy::parse(R"toml(
+[roles.source]
+enroll-roles = []
+enroll-any = true
+)toml");
+  ASSERT(!policy);
+}
