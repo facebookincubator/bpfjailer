@@ -1,0 +1,6 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+[submodule "vendor/libarena"]
+    path = vendor/libarena
+    url = https://github.com/libbpf/libarena.git
+    branch = main

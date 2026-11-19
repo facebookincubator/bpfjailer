@@ -23,7 +23,6 @@ work=$(mktemp -d /tmp/bpfjailer-ci.XXXXXX)
 cp -a "$src/." "$work/"
 
 make -C "$work" -j"$(nproc)" \
-  LIBARENA="$prefix/libarena" \
   LIBBPF_CFLAGS="-I$prefix/libbpf/include" \
   LIBBPF_LIBS="-L$prefix/libbpf/lib -Wl,-rpath,$prefix/libbpf/lib -lbpf" \
   SUDO= \

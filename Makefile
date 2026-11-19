@@ -17,9 +17,9 @@
 #   make config       print the resolved toolchain and flags
 #
 # Requires clang (BPF codegen), bpftool, a C++20 compiler, libbpf with its
-# headers, protobuf-lite with protoc, and a checkout of libarena. Set
+# headers, protobuf-lite with protoc, and the libarena submodule. Set
 # LIBBPF_CFLAGS / LIBBPF_LIBS to point at a libbpf that pkg-config does not
-# know about, and LIBARENA to the libarena checkout (see below).
+# know about, and LIBARENA to override the submodule with a local checkout.
 #
 # Everything is written under $(BUILD); the source tree is never touched.
 
@@ -56,16 +56,13 @@ PROTOBUF_CFLAGS     ?= $(shell pkg-config --cflags $(PROTOBUF_PKG_CONFIG) 2>/dev
 # libarena
 # ---------------------------------------------------------------------------
 
-# The arena spin lock bpfj/lib/bpf/lock.h takes comes from libarena, which
-# ships as source rather than as a package. Clone it and point LIBARENA at the
-# checkout:
+# Initialize the pinned libarena submodule before building:
 #
-#   git clone https://github.com/libbpf/libarena ~/libarena
-#   make LIBARENA=~/libarena
+#   git submodule update --init --recursive
 #
-# Only the BPF objects read it, from $(LIBARENA)/libarena/include.
-LIBARENA ?=
-LIBARENA_INCLUDE := $(LIBARENA)/libarena/include
+# Only the BPF objects read it, from $(LIBARENA)/include.
+LIBARENA ?= vendor/libarena
+LIBARENA_INCLUDE := $(LIBARENA)/include
 
 # ---------------------------------------------------------------------------
 # Static linking
@@ -610,14 +607,14 @@ $(BUILD)/%.bpf.o: %.bpf.c $(VMLINUX) $(LIBARENA_CONFIG) | libarena-check
 # a missing-header error deep in a BPF compile, without forcing a rebuild.
 libarena-check:
 	@if [ ! -f "$(LIBARENA_INCLUDE)/bpf_arena_spin_lock.h" ]; then \
-		echo "libarena not found at '$(LIBARENA)'. Clone it and set LIBARENA:" >&2; \
-		echo "  git clone https://github.com/libbpf/libarena ~/libarena" >&2; \
-		echo "  make LIBARENA=~/libarena" >&2; \
+		echo "libarena not found at '$(LIBARENA)'. Initialize the submodule:" >&2; \
+		echo "  git submodule update --init --recursive" >&2; \
+		echo "Or set LIBARENA to an existing libarena checkout." >&2; \
 		exit 1; \
 	elif ! grep -q 'arena_spinlock_t __arg_arena __arena \*lock' \
 		"$(LIBARENA_INCLUDE)/bpf_arena_spin_lock.h"; then \
 		echo "libarena at '$(LIBARENA)' lacks arena argument tags." >&2; \
-		echo "Update libarena or use the fbsource vendored revision." >&2; \
+		echo "Use the pinned submodule or a compatible LIBARENA checkout." >&2; \
 		exit 1; \
 	fi
 

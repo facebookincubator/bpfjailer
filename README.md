@@ -62,18 +62,26 @@ and an unprivileged process can enroll itself through `bpfjsrv`/`bpfjclient`.
 - libbpf
 - protobuf-lite and `protoc`, which Debian and Ubuntu ship as libprotobuf-dev
   and protobuf-compiler.
-- A checkout of [libarena](https://github.com/libbpf/libarena), which provides
-  the arena spin lock the BPF programs use. 
+- The pinned [libarena](https://github.com/libbpf/libarena) submodule, which provides
+  the arena spin lock the BPF programs use.
 - For signed builds: `openssl`, `fsverity` and `setfattr`, plus the static
   archives listed in the `Makefile` (`STATIC=1`).
 
-Set `LIBBPF_CFLAGS` / `LIBBPF_LIBS` if pkg-config cannot find libbpf. Point
-`LIBARENA` at the libarena checkout on every build:
+Set `LIBBPF_CFLAGS` / `LIBBPF_LIBS` if pkg-config cannot find libbpf.
+The build uses `vendor/libarena` by default; set `LIBARENA` to use a local
+libarena checkout instead.
 
 ## Building
 
-Every `make` below also needs `LIBARENA` (see Requirements), set on the
-command line or exported in the environment.
+Clone with `git clone --recurse-submodules`, or initialize the submodule in
+an existing checkout:
+
+```sh
+git submodule update --init --recursive
+```
+
+This checks out the recorded libarena commit. The branch in `.gitmodules`
+is used for explicit upgrades; builds do not automatically advance it.
 
 ```
 make                # build/bpfjctl

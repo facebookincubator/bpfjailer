@@ -10,7 +10,6 @@ llvm_version=22
 
 libbpf_commit=85c0d575a447651bbeb8e2376eacd64c30dce9a6
 bpftool_commit=83f764e01d7f0cefe1fe3b3405594ed931ed2d37
-libarena_commit=b6968918620807fcc7fdf2a7b165a06ca7a92c1c
 virtme_ng_version=1.41
 
 export DEBIAN_FRONTEND=noninteractive
@@ -74,8 +73,6 @@ fetch libbpf/bpftool "$bpftool_commit" "$prefix/src/bpftool"
 git -C "$prefix/src/bpftool" submodule update -q --init --depth 1
 make -C "$prefix/src/bpftool/src" -j"$(nproc)"
 install -m 0755 "$prefix/src/bpftool/src/bpftool" "$prefix/bin/bpftool"
-
-fetch libbpf/libarena "$libarena_commit" "$prefix/libarena"
 
 python3 -m venv "$prefix/venv"
 "$prefix/venv/bin/pip" install --quiet "virtme-ng==$virtme_ng_version"
